@@ -1,0 +1,44 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# next.js
+.next/
+out/
+next-env.d.ts
+
+# typescript build cache
+*.tsbuildinfo
+
+# production
+build/
+dist/
+
+# env files (never commit secrets)
+.env
+.env*.local
+.env.development
+.env.production
+!.env.example
+
+# prisma
+packages/db/prisma/migrations/dev.db
+*.db
+
+# misc
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+
+# editors
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# testing
+coverage/
+
+# turbo/railway
+.railway/
