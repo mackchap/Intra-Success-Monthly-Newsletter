@@ -4,11 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createNote } from "@/lib/crm/notes";
 import { createTask, completeTask } from "@/lib/crm/tasks";
 import { requireStaffSession } from "@/lib/require-staff";
-
-function str(formData: FormData, key: string): string | undefined {
-  const value = formData.get(key);
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
+import { str } from "@/lib/form-data";
 
 export async function addNoteAction(formData: FormData) {
   const session = await requireStaffSession();

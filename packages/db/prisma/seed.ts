@@ -372,6 +372,95 @@ async function main() {
   console.log(
     `Also seeded: ${freeCourse.title} (free) and ${membershipCourse.title} (membership) with sample lessons.`,
   );
+
+  // A sample 4-step funnel: landing -> opt-in (creates a Contact+Deal) ->
+  // offer/checkout (sells the seeded paid course) -> thank-you.
+  const funnel = await prisma.funnel.upsert({
+    where: { id: "seed-funnel-guide" },
+    update: {},
+    create: {
+      id: "seed-funnel-guide",
+      name: "Free Guide Funnel",
+      slug: "free-guide",
+      description: "Sample funnel seeded for local end-to-end testing.",
+      status: "PUBLISHED",
+    },
+  });
+
+  await prisma.funnelStep.upsert({
+    where: { id: "seed-step-landing" },
+    update: {},
+    create: {
+      id: "seed-step-landing",
+      funnelId: funnel.id,
+      type: "LANDING",
+      name: "Landing",
+      slug: "start",
+      order: 0,
+      content: [
+        { type: "heading", text: "Get the free Intrapreneurship Starter Guide" },
+        { type: "text", body: "5 frameworks you can use at work this week — no fluff." },
+        { type: "button", label: "Get the free guide", href: "/f/free-guide/opt-in" },
+      ],
+    },
+  });
+
+  await prisma.funnelStep.upsert({
+    where: { id: "seed-step-optin" },
+    update: {},
+    create: {
+      id: "seed-step-optin",
+      funnelId: funnel.id,
+      type: "OPT_IN",
+      name: "Opt-in",
+      slug: "opt-in",
+      order: 1,
+      content: [
+        { type: "heading", text: "Where should we send it?" },
+        { type: "form", fields: ["email", "firstName"], submitLabel: "Send me the guide" },
+      ],
+    },
+  });
+
+  await prisma.funnelStep.upsert({
+    where: { id: "seed-step-offer" },
+    update: {},
+    create: {
+      id: "seed-step-offer",
+      funnelId: funnel.id,
+      type: "OFFER",
+      name: "Offer",
+      slug: "offer",
+      order: 2,
+      content: [
+        { type: "heading", text: "While you're here — go deeper" },
+        {
+          type: "text",
+          body: "The guide is a start. Intrapreneurship Fundamentals is the full course, with video lessons and a certificate.",
+        },
+        { type: "buy", productId: "seed-product-intra-course", label: "Get the full course" },
+      ],
+    },
+  });
+
+  await prisma.funnelStep.upsert({
+    where: { id: "seed-step-thankyou" },
+    update: {},
+    create: {
+      id: "seed-step-thankyou",
+      funnelId: funnel.id,
+      type: "THANK_YOU",
+      name: "Thank you",
+      slug: "thank-you",
+      order: 3,
+      content: [
+        { type: "heading", text: "You're all set" },
+        { type: "text", body: "Check your email for the guide. See you inside." },
+      ],
+    },
+  });
+
+  console.log(`Sample funnel ready: ${funnel.name} (/f/${funnel.slug}/start)`);
 }
 
 main()

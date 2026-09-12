@@ -21,8 +21,8 @@ A business platform combining:
 | 1 | Scaffold, auth, full DB schema, first Railway deploy | ✅ done |
 | 2 | CRM core (contacts, companies, deals, tasks, notes, timeline UI) | ✅ done |
 | 3 | Stripe integration + webhooks (products, checkout, subscriptions) | ✅ done |
-| 4 | Academy (courses, enrollment, progress, certificates) | ✅ done (this commit) |
-| 5 | Website, client portal, funnel builder | not started |
+| 4 | Academy (courses, enrollment, progress, certificates) | ✅ done |
+| 5 | Website, client portal, funnel builder | ✅ done (this commit) |
 | 6 | Automation sequences, AI agents, analytics dashboard | not started |
 
 Each phase is built and reviewed before the next starts. Do not jump ahead —
@@ -340,6 +340,70 @@ before there's real business logic to test.
   `Subscription` row, and a genuinely HMAC-signed `customer.subscription.deleted`
   webhook event (same technique as Phase 3) actually revoking that
   membership course's access end to end.
+
+## Website, portal & funnels (Phase 5)
+
+- **Funnel builder is a structured block editor, not drag-and-drop.**
+  `FunnelStep.content` stores an ordered array of typed blocks (`heading`,
+  `text`, `image`, `button`, `form`, `buy` — `apps/web/src/lib/funnels/blocks.ts`).
+  Admins add/reorder/remove blocks via plain forms at `/admin/funnels/[id]`
+  (`lib/funnels/steps.ts`: `addBlock`/`moveBlock`/`removeBlock` rewrite the
+  whole array — there's no per-block DB row). A real drag-and-drop canvas
+  (ClickFunnels/OpenFunnels-class) was explicitly scoped out as its own
+  multi-phase project, not something to build inside Phase 5.
+- **Lead capture reuses the Phase 2 CRM pattern exactly**: `captureLead`
+  (`lib/funnels/leads.ts`) upserts a `Contact`, logs the raw `FunnelSubmission`,
+  and ensures exactly one `Deal` per contact per funnel (repeat opt-ins
+  update the contact, never create a second deal) — all in one function,
+  activity log included (`ActivityType.FUNNEL_SUBMISSION`, already modeled
+  since Phase 1).
+- **Cross-step lead identity is an explicit `?lead=<contactId>` query
+  param, not a session cookie.** Phase 5 only needs to carry identity
+  through explicit actions (a form submit, a button click) as a visitor
+  moves forward through a funnel — it doesn't need anonymous pre-opt-in
+  visit tracking, which is `FunnelVisit`'s job and stays deferred to
+  Phase 6 alongside the analytics dashboard that would actually read it
+  (this also sidesteps a real Next.js gotcha: middleware can set a cookie
+  on a response, but the same request's Server Component render never sees
+  it, since `Set-Cookie` only takes effect on the *next* request — not
+  worth solving for data nothing reads yet).
+- **Funnel checkout hands off to a new `/signup` page for anonymous
+  visitors** — `Enrollment`/`Order` require a `User`, and there was no
+  self-service registration before this phase (only admin-seeded logins).
+  `funnelBuyAction` redirects to `/signup?productId=&funnelId=&lead=` when
+  there's no session; `signupAction` (`apps/web/src/app/signup/actions.ts`)
+  creates the account, links any existing `Contact` by email
+  (`lib/auth/signup.ts`), signs in via the server-side `signIn` from
+  `@/auth` (not `next-auth/react`, which is client-only), then — if a
+  `productId` was carried along — goes straight to Stripe Checkout
+  (reusing Phase 3's `createCheckoutSession`, looking up the `Deal` via
+  `lead`+`funnelId`) instead of bouncing back through the funnel page.
+  This is a real product tradeoff (account-creation friction vs. true
+  guest checkout) made to reuse 100% of Phase 3's tested checkout path
+  rather than build a second, guest-only one — revisit if conversion data
+  ever justifies the guest-checkout path.
+- **Marketing pages** live in the `(marketing)` route group (`apps/web/src/app/(marketing)/`)
+  — a route group changes nothing about the URLs (`/`, `/courses`,
+  `/courses/[slug]`, `/about`, `/pricing` are unchanged), it only lets
+  these pages share one `layout.tsx` (nav + footer) without that nav
+  leaking into funnel pages (`/f/...`, deliberately standalone/distraction-free,
+  matching real funnel UX) or the app's role-gated sections. Copy is
+  real-but-placeholder, on-theme for an intrapreneurship academy — swap it
+  for actual brand copy whenever it's ready, no restructuring needed.
+- **`/portal` finally has a nav layout** (`apps/web/src/app/portal/layout.tsx`),
+  matching the pattern `/staff` and `/admin` already had since Phases 2–3.
+- **Verified live**: `lib/funnels/leads.ts` and `steps.ts` have their own
+  `.test.ts` files (mocked `@platform/db`, same pattern as every other
+  phase), plus a full browser walkthrough against real Postgres — created
+  a funnel and a block through the actual admin UI (not seed data),
+  published it, and loaded the live page; ran the seeded 4-step funnel
+  landing → opt-in → offer → (anonymous) buy click end to end, confirming
+  the Contact/Deal/Activity rows it left behind in Postgres directly, not
+  just the UI; followed the buy click through signup, confirming the User
+  was created and the pre-existing funnel Contact got linked to it by
+  email, with checkout itself stopping at the same "no synced Stripe
+  price" `ValidationError` Phase 3/4 already established as the expected
+  behavior without real Stripe keys in this environment.
 
 ## Deploying to Railway
 

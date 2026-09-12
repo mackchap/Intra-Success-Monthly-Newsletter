@@ -5,12 +5,8 @@ import { revalidatePath } from "next/cache";
 import { createCourse, setCoursePublished, createModule, createLesson, addLessonDownload, setLessonQuiz } from "@/lib/academy/courses";
 import { grantManualEnrollment } from "@/lib/academy/enrollment";
 import { requireStaffSession } from "@/lib/require-staff";
+import { str } from "@/lib/form-data";
 import { prisma } from "@platform/db";
-
-function str(formData: FormData, key: string): string | undefined {
-  const value = formData.get(key);
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
 
 export async function createCourseAction(formData: FormData) {
   await requireStaffSession();
