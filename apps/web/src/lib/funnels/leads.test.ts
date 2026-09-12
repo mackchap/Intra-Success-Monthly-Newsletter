@@ -5,7 +5,7 @@ vi.mock("@platform/db", async () => {
   return {
     ...actual,
     prisma: {
-      contact: { upsert: vi.fn() },
+      contact: { findUnique: vi.fn(), upsert: vi.fn() },
       funnelSubmission: { create: vi.fn() },
       deal: { findFirst: vi.fn(), create: vi.fn() },
       pipeline: { findFirstOrThrow: vi.fn() },
@@ -15,7 +15,17 @@ vi.mock("@platform/db", async () => {
   };
 });
 
+vi.mock("@/lib/queues/sequence-triggers", () => ({
+  enqueueFunnelSubmissionTrigger: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/lib/queues/lead-qualification", () => ({
+  enqueueLeadQualification: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { prisma } from "@platform/db";
+import { enqueueFunnelSubmissionTrigger } from "@/lib/queues/sequence-triggers";
+import { enqueueLeadQualification } from "@/lib/queues/lead-qualification";
 import { captureLead } from "./leads";
 import { ValidationError } from "@/lib/crm/errors";
 
@@ -31,7 +41,8 @@ describe("captureLead", () => {
     expect(prisma.contact.upsert).not.toHaveBeenCalled();
   });
 
-  it("creates a contact, logs the submission, and creates a deal for a new lead", async () => {
+  it("creates a contact, logs the submission, creates a deal, and qualifies the new lead", async () => {
+    vi.mocked(prisma.contact.findUnique).mockResolvedValue(null);
     vi.mocked(prisma.contact.upsert).mockResolvedValue({ id: "contact_1", email: "lead@example.com" } as never);
     vi.mocked(prisma.deal.findFirst).mockResolvedValue(null);
     vi.mocked(prisma.pipeline.findFirstOrThrow).mockResolvedValue({
@@ -59,9 +70,12 @@ describe("captureLead", () => {
       data: expect.objectContaining({ type: "FUNNEL_SUBMISSION", contactId: "contact_1", dealId: "deal_1" }),
     });
     expect(result).toEqual({ contact: { id: "contact_1", email: "lead@example.com" }, deal: { id: "deal_1" } });
+    expect(enqueueFunnelSubmissionTrigger).toHaveBeenCalledWith("funnel_1", "contact_1");
+    expect(enqueueLeadQualification).toHaveBeenCalledWith("contact_1");
   });
 
-  it("reuses the existing deal instead of creating a second one for a repeat opt-in", async () => {
+  it("reuses the existing deal instead of creating a second one for a repeat opt-in, and does not re-qualify it", async () => {
+    vi.mocked(prisma.contact.findUnique).mockResolvedValue({ id: "contact_1", email: "lead@example.com" } as never);
     vi.mocked(prisma.contact.upsert).mockResolvedValue({ id: "contact_1", email: "lead@example.com" } as never);
     vi.mocked(prisma.deal.findFirst).mockResolvedValue({ id: "deal_existing" } as never);
 
@@ -74,5 +88,6 @@ describe("captureLead", () => {
     expect(prisma.deal.create).not.toHaveBeenCalled();
     expect(prisma.pipeline.findFirstOrThrow).not.toHaveBeenCalled();
     expect(result.deal).toEqual({ id: "deal_existing" });
+    expect(enqueueLeadQualification).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,9 @@
 import { notFound } from "next/navigation";
+import { headers } from "next/headers";
 import { prisma } from "@platform/db";
 import { parseBlocks, type FunnelBlock, type LeadFormField } from "@/lib/funnels/blocks";
 import { formatMoney } from "@/lib/format";
+import { logFunnelVisit } from "@/lib/funnels/analytics";
 import { leadCaptureAction, funnelBuyAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -87,16 +89,31 @@ export default async function FunnelStepPage({
   searchParams,
 }: {
   params: Promise<{ funnelSlug: string; stepSlug: string }>;
-  searchParams: Promise<{ lead?: string; submitted?: string }>;
+  searchParams: Promise<{ lead?: string; submitted?: string; utm_source?: string; utm_medium?: string; utm_campaign?: string }>;
 }) {
   const { funnelSlug, stepSlug } = await params;
-  const { lead, submitted } = await searchParams;
+  const { lead, submitted, utm_source, utm_medium, utm_campaign } = await searchParams;
 
   const funnel = await prisma.funnel.findUnique({ where: { slug: funnelSlug } });
   if (!funnel || funnel.status !== "PUBLISHED") notFound();
 
   const step = await prisma.funnelStep.findUnique({ where: { funnelId_slug: { funnelId: funnel.id, slug: stepSlug } } });
   if (!step) notFound();
+
+  const requestHeaders = await headers();
+  const sessionId = requestHeaders.get("x-fs-id");
+  if (sessionId) {
+    await logFunnelVisit({
+      sessionId,
+      funnelId: funnel.id,
+      funnelStepId: step.id,
+      contactId: lead,
+      referrer: requestHeaders.get("referer"),
+      utmSource: utm_source,
+      utmMedium: utm_medium,
+      utmCampaign: utm_campaign,
+    });
+  }
 
   const blocks = parseBlocks(step.content);
 

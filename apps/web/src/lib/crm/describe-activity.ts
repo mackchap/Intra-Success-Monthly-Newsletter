@@ -32,6 +32,10 @@ export function describeActivity(activity: Activity): string {
     case "ORDER_PAID":
       return "Order paid";
     case "SYSTEM":
+      if (metadata.action === "ai_lead_qualification") {
+        return `AI lead qualification: ${metadata.score}/10 — ${metadata.summary ?? ""}`;
+      }
+      return "Activity";
     default:
       return "Activity";
   }

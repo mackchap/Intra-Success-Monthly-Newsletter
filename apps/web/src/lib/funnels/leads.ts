@@ -1,5 +1,7 @@
 import { prisma, ActivityType } from "@platform/db";
 import { ValidationError } from "@/lib/crm/errors";
+import { enqueueFunnelSubmissionTrigger } from "@/lib/queues/sequence-triggers";
+import { enqueueLeadQualification } from "@/lib/queues/lead-qualification";
 
 export interface CaptureLeadInput {
   funnelId: string;
@@ -19,6 +21,7 @@ export async function captureLead(input: CaptureLeadInput) {
     throw new ValidationError("A lead capture form must collect an email address.");
   }
 
+  const existingContact = await prisma.contact.findUnique({ where: { email } });
   const contact = await prisma.contact.upsert({
     where: { email },
     update: {
@@ -71,6 +74,20 @@ export async function captureLead(input: CaptureLeadInput) {
       metadata: { funnelId: input.funnelId, funnelStepId: input.funnelStepId },
     },
   });
+
+  // Best-effort: a stalled Redis/worker shouldn't fail lead capture itself,
+  // only the welcome/nurture sequence enrollment that depends on it.
+  enqueueFunnelSubmissionTrigger(input.funnelId, contact.id).catch((error) =>
+    console.warn(`Failed to enqueue funnel-submission trigger for contact ${contact.id}:`, error),
+  );
+
+  // Only a genuinely new contact gets AI-qualified — a repeat opt-in on the
+  // same email would otherwise re-run (and re-log) qualification every time.
+  if (!existingContact) {
+    enqueueLeadQualification(contact.id).catch((error) =>
+      console.warn(`Failed to enqueue lead qualification for contact ${contact.id}:`, error),
+    );
+  }
 
   return { contact, deal };
 }

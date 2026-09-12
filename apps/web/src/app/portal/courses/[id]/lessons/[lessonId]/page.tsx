@@ -4,6 +4,7 @@ import { prisma } from "@platform/db";
 import { requireSession } from "@/lib/require-auth";
 import { canAccessLesson } from "@/lib/academy/access";
 import { videoEmbedUrl } from "@/lib/academy/video-embed";
+import { LessonChat } from "@/components/academy/lesson-chat";
 import { markLessonCompleteAction } from "../../../actions";
 
 export const dynamic = "force-dynamic";
@@ -106,6 +107,10 @@ export default async function LessonPage({
           {progress?.completed ? "✅ Completed" : "Mark complete"}
         </button>
       </form>
+
+      <div className="mt-8">
+        <LessonChat lessonId={lesson.id} />
+      </div>
     </main>
   );
 }

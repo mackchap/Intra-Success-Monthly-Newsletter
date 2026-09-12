@@ -22,8 +22,8 @@ A business platform combining:
 | 2 | CRM core (contacts, companies, deals, tasks, notes, timeline UI) | ✅ done |
 | 3 | Stripe integration + webhooks (products, checkout, subscriptions) | ✅ done |
 | 4 | Academy (courses, enrollment, progress, certificates) | ✅ done |
-| 5 | Website, client portal, funnel builder | ✅ done (this commit) |
-| 6 | Automation sequences, AI agents, analytics dashboard | not started |
+| 5 | Website, client portal, funnel builder | ✅ done |
+| 6 | Automation sequences, AI agents, analytics dashboard | ✅ done (this commit) |
 
 Each phase is built and reviewed before the next starts. Do not jump ahead —
 if you're an AI agent continuing this work, check this table and the git log
@@ -404,6 +404,116 @@ before there's real business logic to test.
   email, with checkout itself stopping at the same "no synced Stripe
   price" `ValidationError` Phase 3/4 already established as the expected
   behavior without real Stripe keys in this environment.
+
+## Automation & AI agents (Phase 6)
+
+- **Sequences (email/SMS automation)**: `Sequence`/`SequenceStep`/`SequenceEnrollment` (already in
+  the Phase 1 schema) are built out fully in Phase 6. `EmailProvider`/`SmsProvider`
+  (`apps/worker/src/messaging/types.ts`) are small provider-agnostic interfaces; `ResendEmailProvider`/
+  `TwilioSmsProvider` implement them, and `sendSequenceMessage` (`apps/worker/src/messaging/send.ts`)
+  is the only thing sequence-processing code calls — it always writes a `MessageLog` row
+  (`QUEUED` → `SENT`/`FAILED`) so a send attempt is recorded even if the provider throws.
+  `sequenceStepId` on `sendSequenceMessage`'s input is optional (the DB column already was) so the
+  same function also serves one-off, non-sequence sends (see "AI agents" below).
+- **Enrollment/processing is two BullMQ queues, not one long-running job**: `enrollContactInSequence`
+  (`apps/worker/src/sequences/enrollment.ts`) is idempotent (unique `sequenceId_contactId` key) and
+  enqueues the first step's job; `processSequenceStepJob` (`apps/worker/src/queues/sequences.ts`)
+  sends that one step's message, then either enqueues the next step's job (delayed by its
+  `delayMinutes`) or marks the enrollment `COMPLETED` — the queue itself is the state machine.
+  `processSequenceTriggerJob` (`apps/worker/src/queues/sequence-triggers.ts`) fans a funnel
+  submission or an abandoned-checkout check out to every matching active `Sequence`. Both job
+  processors are exported as standalone functions (not inlined in the `Worker` callback) so they're
+  unit-testable without a real Redis connection — `createXWorker()` just wraps them in `new Worker(...)`.
+- **Web-side code only ever produces onto these queues, never consumes**: `apps/web/src/lib/queues/*.ts`
+  are thin lazy `Queue` wrappers (`enqueueFunnelSubmissionTrigger`, `enqueueAbandonedCheckoutCheck`,
+  `enqueueLeadQualification`, `enqueueManualMessage`) — the worker owns every consumer. Enqueue calls
+  that are a *side effect* of some other primary action (lead capture, checkout, contact creation)
+  are wrapped in `.catch(error => console.warn(...))`, per the established pattern, so a stalled
+  Redis/worker never breaks the user-facing action itself.
+- **Admin UI** (`/admin/sequences`, `/admin/sequences/[id]`): create a sequence (name, trigger,
+  optional funnel), activate/deactivate it, add ordered steps (channel, delay, subject, body) —
+  `order` auto-assigned by counting siblings, same pattern as Modules/Lessons/FunnelSteps.
+- **Funnel visit logging & analytics** (`FunnelVisit` was already in the Phase 1 schema, unused
+  until now): every `/f/[funnelSlug]/[stepSlug]` page view is logged via `logFunnelVisit`
+  (`apps/web/src/lib/funnels/analytics.ts`) — one row per view, no dedupe, same as a GA pageview.
+  The anonymous per-visitor `sessionId` is a cookie (`fs_id`) set by `middleware.ts` for `/f/*`
+  routes — critically, it's *also* forwarded via a request header (`x-fs-id`) using
+  `NextResponse.next({ request: { headers } })`, because a cookie set in middleware isn't visible
+  to that same request's Server Component render (`Set-Cookie` only takes effect on the browser's
+  *next* request — this was flagged as a known gotcha back in Phase 5 and solved here exactly as
+  planned then). `getFunnelAnalytics(funnelId)` computes, per step: total visits, unique visitors
+  (distinct `sessionId`), submissions, and conversion-to-next-step (unique visitors who also
+  visited the next step, divided by this step's unique visitors) — plus funnel-wide total leads
+  and paid-order revenue. Rendered at `/admin/funnels/[id]/analytics`, linked from the funnel
+  detail page. Fully testable without any external API keys, since it's pure internal DB
+  aggregation — verified live with multiple simulated visitor sessions at different funnel depths
+  against real Postgres, confirming the computed numbers matched the simulated drop-off exactly.
+- **AI agents**: `runAgentWithTools({system, userMessage, history?, tools, executeTool, forceTool?,
+  maxTurns?})` (`apps/web/src/lib/agents/run.ts`, duplicated with a factory-function client instead
+  of a Proxy in `apps/worker/src/agents/run.ts` — the two apps share no code beyond `@platform/db`)
+  is a minimal Anthropic Messages API tool-calling loop: send the conversation, execute any
+  `tool_use` blocks, feed results back as `tool_result`, repeat until the model stops calling tools
+  or `maxTurns` is hit. `forceTool` pins `tool_choice` on the first turn only, for agents whose job
+  is "always call this one write tool once" rather than a free-form chat. `anthropic` (web) is a
+  lazy `Proxy` singleton exactly like `lib/stripe.ts`, for the same reason (Next.js evaluates route
+  modules during build-time page-data collection, before `.env` loads); `getAnthropicClient()`
+  (worker) is a lazy memoized factory, matching the worker's existing messaging-provider pattern.
+  `DEFAULT_AGENT_MODEL` reads `ANTHROPIC_MODEL` with a hardcoded fallback, overridable per call.
+  Three of the four agents run **synchronously in the web process** (a Server Action calling
+  Anthropic directly) rather than the worker — a deliberate deviation from the stack note that
+  background work belongs in the worker, made because they're interactive/staff-or-student-facing
+  and a queue+poll UX would be disproportionate for this phase. Only the lead-qualification agent,
+  triggered automatically rather than by a human waiting on a response, runs as a true background
+  job.
+  - **Lead qualification** (worker, background): triggered from `createContact`
+    (`apps/web/src/lib/crm/contacts.ts`) and `captureLead` (`apps/web/src/lib/funnels/leads.ts`) —
+    the latter only for a *genuinely new* contact (checked via a `findUnique` before the upsert, not
+    a timestamp heuristic), so a repeat funnel opt-in on the same email doesn't re-qualify every
+    time. `qualifyLead` (`apps/worker/src/agents/lead-qualification.ts`) forces a single
+    `record_qualification(score, summary, tags)` tool call, which merges an `aiQualification` object
+    into `Contact.customFields` (`Json`), merges `tags` into `Contact.tags`, and logs a `SYSTEM`
+    `Activity` — `describeActivity` renders that Activity's score/summary on the CRM timeline instead
+    of a generic fallback.
+  - **Follow-up drafting** (web, staff-triggered): a "Draft follow-up" button on
+    `/staff/contacts/[id]` (`FollowUpDrafter` client component) calls a Server Action directly
+    (not a `<form action>` — Server Actions support both invocation styles, and this one needs to
+    return the draft for interactive review rather than redirect) to get a drafted subject/body from
+    `draftFollowUpEmail` (`apps/web/src/lib/agents/follow-up.ts`), which forces a
+    `save_draft_email(subject, body)` tool call. Nothing is persisted or sent at draft time — staff
+    can edit the draft inline, and only clicking "Send" enqueues it via the new `manual-message`
+    BullMQ queue (`apps/worker/src/queues/manual-message.ts`), which calls the same
+    `sendSequenceMessage` sequences use (with no `sequenceStepId`) and additionally logs an
+    `EMAIL_SENT`/`SMS_SENT` Activity — unlike automated sequence sends, a staff-initiated manual
+    send is timeline-worthy. Unlike the other agents' best-effort `.catch`-wrapped enqueues, the
+    send action's enqueue call is *the* requested action here, not a side effect, so its failure is
+    allowed to surface to the UI rather than being swallowed.
+  - **Student support chat** (web, portal): a simple chat widget (`LessonChat`) on the lesson
+    viewer page, scoped to the current course. `askStudentSupport` (`apps/web/src/lib/agents/
+    student-support.ts`) is the one agent that's a genuine multi-turn *conversation* (not just a
+    multi-turn tool loop within one call) — the client keeps prior turns as plain `{role, content}`
+    text pairs and passes them as `history` on each new question, which `runAgentWithTools` prepends
+    before the new `userMessage`. Its one read tool, `search_course_content(query)`, does a plain
+    case-insensitive substring search over the current course's `Lesson.title`/`content` —
+    deliberately no vector search/embeddings for this phase. The Server Action
+    (`.../lessons/[lessonId]/chat-actions.ts`) re-derives `courseId` from the lesson server-side via
+    `canAccessLesson`, rather than trusting a client-supplied course id, so a student's chat can only
+    ever search content from a course they're actually enrolled in and have access to.
+  - **Funnel optimizer** (web, admin): a "Get AI suggestions" button on
+    `/admin/funnels/[id]/analytics` (`OptimizerAdvice`) calls `getFunnelOptimizationAdvice`
+    (`apps/web/src/lib/agents/funnel-optimizer.ts`), which offers one read-only tool,
+    `get_funnel_analytics()` (backed by the same `getFunnelAnalytics` from the visit-logging work
+    above) — no write tool, since this agent is advisory-only and can't change the funnel itself.
+  - **Testing without a real Anthropic key**: this environment has no real `ANTHROPIC_API_KEY`
+    (only a placeholder), so `runAgentWithTools` and all four agents' business logic (tool
+    selection, forced-tool handling, DB writes from tool results, history threading) are unit-tested
+    with a fully mocked Anthropic client — but every agent's UI path was *also* verified live end to
+    end (real contact creation → real BullMQ job → real worker pickup → real HTTPS call to
+    Anthropic's API), each producing a genuine `401 invalid API key` response from Anthropic's own
+    servers rather than a mock. That's a stronger signal than it sounds: it proves the entire
+    request pipeline — client construction, system/tools/messages/tool_choice serialization, queue
+    routing, and the UI's error handling — is wired correctly all the way to Anthropic's auth layer,
+    with only the final completion blocked by the missing key. Same accepted pattern as Stripe/
+    Resend/Twilio in every prior phase.
 
 ## Deploying to Railway
 

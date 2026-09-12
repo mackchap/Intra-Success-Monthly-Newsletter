@@ -1,4 +1,5 @@
 import { prisma } from "@platform/db";
+import { enqueueLeadQualification } from "@/lib/queues/lead-qualification";
 
 export interface CreateContactInput {
   email: string;
@@ -11,7 +12,7 @@ export interface CreateContactInput {
 }
 
 export async function createContact(input: CreateContactInput) {
-  return prisma.contact.create({
+  const contact = await prisma.contact.create({
     data: {
       email: input.email,
       firstName: input.firstName,
@@ -22,4 +23,12 @@ export async function createContact(input: CreateContactInput) {
       source: input.source ?? "manual",
     },
   });
+
+  // Best-effort: a stalled Redis/worker shouldn't fail contact creation
+  // itself, only the background AI qualification that depends on it.
+  enqueueLeadQualification(contact.id).catch((error) =>
+    console.warn(`Failed to enqueue lead qualification for contact ${contact.id}:`, error),
+  );
+
+  return contact;
 }

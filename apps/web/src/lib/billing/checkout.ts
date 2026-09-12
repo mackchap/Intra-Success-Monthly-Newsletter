@@ -2,6 +2,7 @@ import { prisma, ProductType } from "@platform/db";
 import { stripe } from "@/lib/stripe";
 import { getOrCreateStripeCustomerId } from "./customer";
 import { ValidationError } from "@/lib/crm/errors";
+import { enqueueAbandonedCheckoutCheck } from "@/lib/queues/sequence-triggers";
 
 export interface CreateCheckoutSessionInput {
   productId: string;
@@ -24,6 +25,7 @@ export async function createCheckoutSession(input: CreateCheckoutSessionInput) {
 
   const user = await prisma.user.findUniqueOrThrow({ where: { id: input.userId } });
   const customerId = await getOrCreateStripeCustomerId(input.userId);
+  const deal = input.dealId ? await prisma.deal.findUnique({ where: { id: input.dealId } }) : null;
 
   const order = await prisma.order.create({
     data: {
@@ -34,6 +36,8 @@ export async function createCheckoutSession(input: CreateCheckoutSessionInput) {
       productId: product.id,
       courseId: product.courseId,
       dealId: input.dealId,
+      contactId: deal?.contactId,
+      funnelId: deal?.funnelId,
     },
   });
 
@@ -54,6 +58,14 @@ export async function createCheckoutSession(input: CreateCheckoutSessionInput) {
     where: { id: order.id },
     data: { stripeCheckoutSessionId: session.id },
   });
+
+  if (deal?.funnelId) {
+    // Best-effort: a stalled Redis/worker shouldn't block checkout itself,
+    // only the abandoned-checkout nurture sequence that depends on it.
+    enqueueAbandonedCheckoutCheck(order.id, 60).catch((error) =>
+      console.warn(`Failed to enqueue abandoned-checkout check for order ${order.id}:`, error),
+    );
+  }
 
   if (!session.url) {
     throw new Error("Stripe did not return a checkout URL.");

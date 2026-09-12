@@ -8,6 +8,7 @@ vi.mock("@platform/db", async () => {
       product: { findUniqueOrThrow: vi.fn() },
       user: { findUniqueOrThrow: vi.fn(), update: vi.fn() },
       order: { create: vi.fn(), update: vi.fn() },
+      deal: { findUnique: vi.fn() },
     },
   };
 });
@@ -19,8 +20,13 @@ vi.mock("@/lib/stripe", () => ({
   },
 }));
 
+vi.mock("@/lib/queues/sequence-triggers", () => ({
+  enqueueAbandonedCheckoutCheck: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { prisma } from "@platform/db";
 import { stripe } from "@/lib/stripe";
+import { enqueueAbandonedCheckoutCheck } from "@/lib/queues/sequence-triggers";
 import { createCheckoutSession } from "./checkout";
 import { ValidationError } from "@/lib/crm/errors";
 
@@ -83,6 +89,70 @@ describe("createCheckoutSession", () => {
       data: { stripeCheckoutSessionId: "cs_1" },
     });
     expect(url).toBe("https://checkout.stripe.com/session/cs_1");
+    expect(enqueueAbandonedCheckoutCheck).not.toHaveBeenCalled();
+  });
+
+  it("links the order to the deal's contact/funnel and schedules an abandoned-checkout check for funnel deals", async () => {
+    vi.mocked(prisma.product.findUniqueOrThrow).mockResolvedValue({
+      id: "product_1",
+      name: "Sample Course",
+      type: "COURSE",
+      stripePriceId: "price_1",
+      priceCents: 9900,
+      currency: "usd",
+      courseId: "course_1",
+    } as never);
+    vi.mocked(prisma.user.findUniqueOrThrow).mockResolvedValue({
+      id: "user_1",
+      email: "buyer@example.com",
+      stripeCustomerId: "cus_existing",
+    } as never);
+    vi.mocked(prisma.deal.findUnique).mockResolvedValue({
+      id: "deal_1",
+      contactId: "contact_1",
+      funnelId: "funnel_1",
+    } as never);
+    vi.mocked(prisma.order.create).mockResolvedValue({ id: "order_1" } as never);
+    vi.mocked(stripe.checkout.sessions.create).mockResolvedValue({
+      id: "cs_1",
+      url: "https://checkout.stripe.com/session/cs_1",
+    } as never);
+
+    await createCheckoutSession({ productId: "product_1", userId: "user_1", dealId: "deal_1" });
+
+    expect(prisma.order.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ dealId: "deal_1", contactId: "contact_1", funnelId: "funnel_1" }),
+      }),
+    );
+    expect(enqueueAbandonedCheckoutCheck).toHaveBeenCalledWith("order_1", 60);
+  });
+
+  it("does not schedule an abandoned-checkout check for a deal with no funnel", async () => {
+    vi.mocked(prisma.product.findUniqueOrThrow).mockResolvedValue({
+      id: "product_1",
+      name: "Sample Course",
+      type: "COURSE",
+      stripePriceId: "price_1",
+      priceCents: 9900,
+      currency: "usd",
+      courseId: "course_1",
+    } as never);
+    vi.mocked(prisma.user.findUniqueOrThrow).mockResolvedValue({
+      id: "user_1",
+      email: "buyer@example.com",
+      stripeCustomerId: "cus_existing",
+    } as never);
+    vi.mocked(prisma.deal.findUnique).mockResolvedValue({ id: "deal_1", contactId: "contact_1", funnelId: null } as never);
+    vi.mocked(prisma.order.create).mockResolvedValue({ id: "order_1" } as never);
+    vi.mocked(stripe.checkout.sessions.create).mockResolvedValue({
+      id: "cs_1",
+      url: "https://checkout.stripe.com/session/cs_1",
+    } as never);
+
+    await createCheckoutSession({ productId: "product_1", userId: "user_1", dealId: "deal_1" });
+
+    expect(enqueueAbandonedCheckoutCheck).not.toHaveBeenCalled();
   });
 
   it("uses subscription mode for MEMBERSHIP products", async () => {

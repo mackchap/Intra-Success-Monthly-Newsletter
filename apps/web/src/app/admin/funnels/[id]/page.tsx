@@ -45,13 +45,18 @@ export default async function AdminFunnelDetailPage({ params }: { params: Promis
           <h1 className="text-2xl font-semibold">{funnel.name}</h1>
           <p className="text-sm text-slate-500">/f/{funnel.slug}</p>
         </div>
-        <form action={publishFunnelAction}>
-          <input type="hidden" name="funnelId" value={funnel.id} />
-          <input type="hidden" name="status" value={funnel.status} />
-          <button type="submit" className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium">
-            {funnel.status === "PUBLISHED" ? "Unpublish" : "Publish"}
-          </button>
-        </form>
+        <div className="flex items-center gap-3">
+          <Link href={`/admin/funnels/${funnel.id}/analytics`} className="text-sm font-medium text-brand-600">
+            Analytics
+          </Link>
+          <form action={publishFunnelAction}>
+            <input type="hidden" name="funnelId" value={funnel.id} />
+            <input type="hidden" name="status" value={funnel.status} />
+            <button type="submit" className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium">
+              {funnel.status === "PUBLISHED" ? "Unpublish" : "Publish"}
+            </button>
+          </form>
+        </div>
       </div>
 
       <section>

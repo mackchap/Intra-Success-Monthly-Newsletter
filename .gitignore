@@ -26,6 +26,9 @@ dist/
 packages/db/prisma/migrations/dev.db
 *.db
 
+# redis (local dev snapshot)
+dump.rdb
+
 # misc
 .DS_Store
 Thumbs.db

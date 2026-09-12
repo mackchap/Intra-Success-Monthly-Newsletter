@@ -5,6 +5,7 @@ import { contactName, formatMoney } from "@/lib/format";
 import { Timeline } from "@/components/crm/timeline";
 import { NotesPanel } from "@/components/crm/notes-panel";
 import { TasksPanel } from "@/components/crm/tasks-panel";
+import { FollowUpDrafter } from "@/components/crm/follow-up-drafter";
 
 export default async function ContactDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -61,6 +62,8 @@ export default async function ContactDetailPage({ params }: { params: Promise<{ 
         <TasksPanel tasks={contact.tasks} contactId={contact.id} />
         <NotesPanel notes={contact.notes} contactId={contact.id} />
       </div>
+
+      <FollowUpDrafter contactId={contact.id} />
 
       <section>
         <h2 className="mb-2 font-medium">Activity timeline</h2>
