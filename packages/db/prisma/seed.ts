@@ -214,6 +214,164 @@ async function main() {
   });
 
   console.log(`Sample course + product ready: ${course.title} (/products/seed-product-intra-course)`);
+
+  // Modules/lessons covering every Academy access rule: immediate access,
+  // drip delay, a lesson-level prerequisite, video/text/quiz lesson types.
+  const module1 = await prisma.module.upsert({
+    where: { id: "seed-module-1" },
+    update: {},
+    create: { id: "seed-module-1", courseId: course.id, title: "Getting Started", order: 0 },
+  });
+  const module2 = await prisma.module.upsert({
+    where: { id: "seed-module-2" },
+    update: {},
+    create: { id: "seed-module-2", courseId: course.id, title: "Advanced Topics", order: 1 },
+  });
+
+  await prisma.lesson.upsert({
+    where: { id: "seed-lesson-welcome" },
+    update: {},
+    create: {
+      id: "seed-lesson-welcome",
+      moduleId: module1.id,
+      title: "Welcome",
+      order: 0,
+      type: "TEXT",
+      content: "Welcome to the course! This lesson is available immediately after enrolling.",
+    },
+  });
+  await prisma.lesson.upsert({
+    where: { id: "seed-lesson-intro-video" },
+    update: {},
+    create: {
+      id: "seed-lesson-intro-video",
+      moduleId: module1.id,
+      title: "Introduction video",
+      order: 1,
+      type: "VIDEO",
+      videoProvider: "VIMEO",
+      videoId: "76979871", // Vimeo's public staff-pick demo video
+    },
+  });
+  await prisma.lesson.upsert({
+    where: { id: "seed-lesson-drip" },
+    update: {},
+    create: {
+      id: "seed-lesson-drip",
+      moduleId: module2.id,
+      title: "Week 2: Deeper practice",
+      order: 0,
+      type: "TEXT",
+      content: "This lesson unlocks a week after enrollment (drip scheduling).",
+      dripDelayDays: 7,
+    },
+  });
+  await prisma.lesson.upsert({
+    where: { id: "seed-lesson-quiz" },
+    update: {},
+    create: {
+      id: "seed-lesson-quiz",
+      moduleId: module2.id,
+      title: "Check your understanding",
+      order: 1,
+      type: "QUIZ",
+      prerequisiteLessonId: "seed-lesson-drip",
+    },
+  });
+  await prisma.quiz.upsert({
+    where: { lessonId: "seed-lesson-quiz" },
+    update: {},
+    create: {
+      lessonId: "seed-lesson-quiz",
+      questions: [
+        {
+          question: "What is intrapreneurship?",
+          options: ["Starting an outside business", "Acting entrepreneurially inside an org", "A finance term"],
+          correctIndex: 1,
+        },
+      ],
+    },
+  });
+
+  // A free course, to exercise the self-enroll (no payment) path.
+  const freeCourse = await prisma.course.upsert({
+    where: { id: "seed-course-free" },
+    update: {},
+    create: {
+      id: "seed-course-free",
+      title: "Community Basics",
+      slug: "community-basics",
+      description: "A free sample course anyone can self-enroll in.",
+      priceType: "FREE",
+      priceCents: 0,
+      published: true,
+    },
+  });
+  const freeModule = await prisma.module.upsert({
+    where: { id: "seed-module-free" },
+    update: {},
+    create: { id: "seed-module-free", courseId: freeCourse.id, title: "Basics", order: 0 },
+  });
+  await prisma.lesson.upsert({
+    where: { id: "seed-lesson-free" },
+    update: {},
+    create: {
+      id: "seed-lesson-free",
+      moduleId: freeModule.id,
+      title: "Getting started, for free",
+      order: 0,
+      type: "TEXT",
+      content: "Anyone can enroll in this course at no cost.",
+    },
+  });
+
+  // A membership-tier course + a matching MEMBERSHIP product, to exercise
+  // the "subscribe to access" path. Like the paid course's product, this
+  // needs a real Stripe Price synced via webhook before it's purchasable.
+  const membershipCourse = await prisma.course.upsert({
+    where: { id: "seed-course-membership" },
+    update: {},
+    create: {
+      id: "seed-course-membership",
+      title: "Founding Member Vault",
+      slug: "founding-member-vault",
+      description: "Included with an active membership subscription.",
+      priceType: "MEMBERSHIP",
+      priceCents: 2900,
+      published: true,
+    },
+  });
+  const membershipModule = await prisma.module.upsert({
+    where: { id: "seed-module-membership" },
+    update: {},
+    create: { id: "seed-module-membership", courseId: membershipCourse.id, title: "Member Exclusives", order: 0 },
+  });
+  await prisma.lesson.upsert({
+    where: { id: "seed-lesson-membership" },
+    update: {},
+    create: {
+      id: "seed-lesson-membership",
+      moduleId: membershipModule.id,
+      title: "Welcome, members",
+      order: 0,
+      type: "TEXT",
+      content: "Available to anyone with an active membership subscription.",
+    },
+  });
+  await prisma.product.upsert({
+    where: { id: "seed-product-membership" },
+    update: {},
+    create: {
+      id: "seed-product-membership",
+      name: "Founding Member",
+      type: "MEMBERSHIP",
+      priceCents: 2900,
+    },
+  });
+
+  console.log(
+    `Also seeded: ${freeCourse.title} (free) and ${membershipCourse.title} (membership) with sample lessons.`,
+  );
 }
 
 main()

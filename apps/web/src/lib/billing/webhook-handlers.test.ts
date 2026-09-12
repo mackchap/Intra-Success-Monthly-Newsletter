@@ -12,7 +12,7 @@ vi.mock("@platform/db", async () => {
       deal: { findUnique: vi.fn() },
       pipelineStage: { findFirst: vi.fn() },
       activity: { create: vi.fn() },
-      subscription: { upsert: vi.fn(), updateMany: vi.fn() },
+      subscription: { upsert: vi.fn(), updateMany: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
       user: { findUnique: vi.fn() },
       webhookEvent: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
     },
@@ -23,8 +23,13 @@ vi.mock("@/lib/crm/deals", () => ({
   moveDealStage: vi.fn(),
 }));
 
+vi.mock("@/lib/academy/enrollment", () => ({
+  revokeMembershipEnrollments: vi.fn(),
+}));
+
 import { prisma } from "@platform/db";
 import { moveDealStage } from "@/lib/crm/deals";
+import { revokeMembershipEnrollments } from "@/lib/academy/enrollment";
 import {
   handleCheckoutSessionCompleted,
   handleChargeRefunded,
@@ -223,13 +228,28 @@ describe("handleSubscriptionUpsert", () => {
 });
 
 describe("handleSubscriptionDeleted", () => {
-  it("marks the subscription canceled", async () => {
+  it("marks the subscription canceled and revokes membership enrollments for its user", async () => {
+    vi.mocked(prisma.subscription.findUnique).mockResolvedValue({
+      stripeSubscriptionId: "sub_1",
+      userId: "user_1",
+    } as never);
+
     await handleSubscriptionDeleted({ id: "sub_1" } as unknown as Stripe.Subscription);
 
-    expect(prisma.subscription.updateMany).toHaveBeenCalledWith({
+    expect(prisma.subscription.update).toHaveBeenCalledWith({
       where: { stripeSubscriptionId: "sub_1" },
       data: { status: "CANCELED" },
     });
+    expect(revokeMembershipEnrollments).toHaveBeenCalledWith("user_1");
+  });
+
+  it("does nothing if the subscription was never synced", async () => {
+    vi.mocked(prisma.subscription.findUnique).mockResolvedValue(null);
+
+    await handleSubscriptionDeleted({ id: "sub_missing" } as unknown as Stripe.Subscription);
+
+    expect(prisma.subscription.update).not.toHaveBeenCalled();
+    expect(revokeMembershipEnrollments).not.toHaveBeenCalled();
   });
 });
 

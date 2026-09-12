@@ -10,6 +10,7 @@ import {
   SubscriptionStatus,
 } from "@platform/db";
 import { moveDealStage } from "@/lib/crm/deals";
+import { revokeMembershipEnrollments } from "@/lib/academy/enrollment";
 
 // ---------------------------------------------------------------------------
 // Product/Price sync — Stripe Dashboard/API is the source of truth for what's
@@ -211,17 +212,20 @@ export async function handleSubscriptionUpsert(subscription: Stripe.Subscription
 }
 
 export async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
-  await prisma.subscription.updateMany({
+  const existing = await prisma.subscription.findUnique({
+    where: { stripeSubscriptionId: subscription.id },
+  });
+  if (!existing) return;
+
+  await prisma.subscription.update({
     where: { stripeSubscriptionId: subscription.id },
     data: { status: SubscriptionStatus.CANCELED },
   });
 
-  // Revoking membership-gated course access based on this cancellation is
-  // Phase 4 scope: Enrollment doesn't yet track which subscription granted
-  // it, because Academy's access-control rules (which courses require an
-  // active membership) don't exist yet. Phase 4's access checks should read
-  // Subscription.status directly for MEMBERSHIP-tier courses rather than
-  // relying on an Enrollment row.
+  // A MEMBERSHIP-tier course's access is only as good as the subscription
+  // that granted it — unlike a one-time STRIPE_PURCHASE enrollment, which
+  // stays ACTIVE regardless of later subscription changes. (Phase 4.)
+  await revokeMembershipEnrollments(existing.userId);
 }
 
 // ---------------------------------------------------------------------------

@@ -20,8 +20,8 @@ A business platform combining:
 |---|---|---|
 | 1 | Scaffold, auth, full DB schema, first Railway deploy | ✅ done |
 | 2 | CRM core (contacts, companies, deals, tasks, notes, timeline UI) | ✅ done |
-| 3 | Stripe integration + webhooks (products, checkout, subscriptions) | ✅ done (this commit) |
-| 4 | Academy (courses, enrollment, progress, certificates) | not started |
+| 3 | Stripe integration + webhooks (products, checkout, subscriptions) | ✅ done |
+| 4 | Academy (courses, enrollment, progress, certificates) | ✅ done (this commit) |
 | 5 | Website, client portal, funnel builder | not started |
 | 6 | Automation sequences, AI agents, analytics dashboard | not started |
 
@@ -236,12 +236,12 @@ before there's real business logic to test.
   - `charge.refunded` → marks the `Order` `REFUNDED` and revokes the
     matching `Enrollment` (`REVOKED` + `revokedAt`).
   - `customer.subscription.created`/`updated`/`deleted` → upserts/cancels
-    the `Subscription` row. **Revoking membership-gated course access on
-    cancellation is explicitly deferred to Phase 4** — `Enrollment` doesn't
-    yet track which subscription granted it, because Academy's access-control
-    rules (which courses require an active membership) don't exist yet.
-    Phase 4's access checks should read `Subscription.status` directly for
-    `MEMBERSHIP`-tier courses rather than inventing an Enrollment link now.
+    the `Subscription` row; `deleted` also calls
+    `revokeMembershipEnrollments` (Phase 4, `apps/web/src/lib/academy/enrollment.ts`)
+    to revoke that user's `MEMBERSHIP`-sourced `Enrollment` rows — see the
+    Academy section below for why that's the right place for it (this was
+    originally deferred here as a Phase 4 item; closed once Academy's
+    Enrollment-centric access model existed to revoke against).
   - Idempotency: every event is recorded in `WebhookEvent` keyed by Stripe's
     event id before dispatching; an event whose `processedAt` is already set
     is skipped. The route returns `500` (not `200`) on a handler error so
@@ -269,6 +269,77 @@ before there's real business logic to test.
   Postgres — confirming actual DB side effects, not just mocked ones. Once
   real test-mode keys are set, exercise checkout/portal live with
   `stripe listen` per the section below.
+
+## Academy (Phase 4)
+
+- **`Enrollment.status = ACTIVE` is the single source of truth for course
+  access**, regardless of how the student got in. Every access path funnels
+  through exactly one of four functions in `apps/web/src/lib/academy/enrollment.ts`,
+  each creating/activating an `Enrollment` row with a different `source`:
+  - `enrollInFreeCourse` — student self-serve, `Course.priceType === FREE`
+  - `enrollViaMembership` — student self-serve, requires an `ACTIVE`/`TRIALING`
+    `Subscription`; creates a `MEMBERSHIP`-sourced `Enrollment` so drip timing,
+    progress, and certificates all have the same anchor regardless of tier
+  - Stripe webhook (`checkout.session.completed`, Phase 3) — `STRIPE_PURCHASE`
+  - `grantManualEnrollment` — admin/staff support action (`/admin/courses/[id]`
+    "Grant access" form), `MANUAL`
+  - Revocation is symmetric: `charge.refunded` (Phase 3) revokes a
+    `STRIPE_PURCHASE` enrollment; `customer.subscription.deleted` revokes
+    `MEMBERSHIP` ones via `revokeMembershipEnrollments`. A one-time purchase
+    stays `ACTIVE` regardless of any later subscription changes — only a
+    refund touches it.
+- **`canAccessLesson`** (`apps/web/src/lib/academy/access.ts`) is the single
+  gate everything else goes through — the lesson viewer page, and
+  `markLessonComplete`/`updateVideoProgress` (which re-check it rather than
+  trusting the page already did). Checks in order: enrollment active → drip
+  delay elapsed (`Enrollment.enrolledAt + Lesson.dripDelayDays`) →
+  lesson-level prerequisite completed (`LessonProgress`) → course-level
+  prerequisite completed (a `Certificate` exists for that prerequisite
+  course — completion is defined as "has a certificate," not a separate
+  flag). Returns a discriminated result (`{allowed: false, reason, ...}`)
+  so the UI can show *why* something is locked, not just that it is.
+- **Certificates auto-issue**, no manual step: `checkAndIssueCertificate`
+  runs after every `markLessonComplete` call and creates the `Certificate`
+  the moment every lesson in the course is done (idempotent — checks for an
+  existing one first). The PDF itself is rendered **on demand**
+  (`/api/certificates/[id]/pdf`, `apps/web/src/lib/academy/certificate-pdf.ts`,
+  via `pdf-lib`) rather than pre-generated and uploaded to R2 at issuance
+  time — we don't have R2 credentials to test that path in every
+  environment, and on-demand generation needs none. `Certificate.certificateUrl`
+  is left `null`; revisit pre-rendering to R2 if certificates need to be
+  emailed or cached.
+- **Video embeds need no API keys**: `videoEmbedUrl` (`apps/web/src/lib/academy/video-embed.ts`)
+  builds a plain iframe `src` from `Lesson.videoProvider`/`videoId` —
+  `https://player.mux.com/{playbackId}` or `https://player.vimeo.com/video/{id}`.
+  Both providers support this without any SDK or secret, which is why the
+  lesson viewer's video rendering was fully testable live (a real Vimeo demo
+  video is in the seed data) despite having no real Mux credentials either.
+- **Course authoring is admin-only** (`/admin/courses`, `/admin/courses/[id]`):
+  create a course, add modules, add lessons (all four `LessonType`s in one
+  form — fields not relevant to the chosen type are simply ignored). Lesson
+  downloads and quiz questions are pasted in directly (a download's R2/S3
+  URL, a quiz's JSON question bank) rather than uploaded/built through a
+  dedicated UI — consistent with `Quiz.questions` being "intentionally
+  simple" per its schema comment, and with not having R2 credentials to
+  build a real upload flow against yet.
+- **Student-facing routes**: `/courses` (public catalog, published courses
+  only) → `/courses/[slug]` (enroll/buy/subscribe CTA depending on
+  `priceType` and current access) → `/portal/courses` (my enrolled courses +
+  progress bars) → `/portal/courses/[id]` (module/lesson list, 🔒/▶️/✅ per
+  lesson's access+progress state) → `/portal/courses/[id]/lessons/[lessonId]`
+  (the actual viewer — video/text/downloads/quiz + "Mark complete").
+- **Verified live**, not just unit-tested (`canAccessLesson`,
+  `enrollment.ts`, `certificates.ts`, `progress.ts` each have their own
+  `.test.ts` mocking `@platform/db`): a full browser walkthrough against
+  real Postgres — free self-enroll, direct-URL access to a still-drip-locked
+  lesson correctly blocked, backdating `Enrollment.enrolledAt` to prove the
+  drip unlock math against real elapsed time (not mocked `Date.now()`), a
+  quiz lesson gated on its prerequisite until that prerequisite was marked
+  complete, auto-issued certificate downloaded as an actual `%PDF`-prefixed
+  file once every lesson was done, membership self-enroll gated on a real
+  `Subscription` row, and a genuinely HMAC-signed `customer.subscription.deleted`
+  webhook event (same technique as Phase 3) actually revoking that
+  membership course's access end to end.
 
 ## Deploying to Railway
 

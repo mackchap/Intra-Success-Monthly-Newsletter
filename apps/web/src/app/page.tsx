@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function HomePage() {
   return (
     <main className="flex min-h-screen flex-col items-center justify-center gap-4 px-6 text-center">
@@ -12,6 +14,9 @@ export default function HomePage() {
         CRM, funnels, and the course academy are being built out phase by
         phase.
       </p>
+      <Link href="/courses" className="text-brand-600 underline">
+        Browse courses
+      </Link>
     </main>
   );
 }

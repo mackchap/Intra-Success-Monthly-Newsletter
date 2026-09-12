@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { auth } from "@/auth";
 import { prisma } from "@platform/db";
 import { formatDate, formatMoney } from "@/lib/format";
@@ -39,8 +40,9 @@ export default async function PortalPage() {
       </div>
 
       <p className="mt-4 text-sm text-slate-500">
-        {enrollmentCount} active course{enrollmentCount === 1 ? "" : "s"}. Full course browsing and progress
-        tracking land in Phase 4 (Academy).
+        <Link href="/portal/courses" className="text-brand-600">
+          {enrollmentCount} active course{enrollmentCount === 1 ? "" : "s"} →
+        </Link>
       </p>
 
       <section className="mt-8">
