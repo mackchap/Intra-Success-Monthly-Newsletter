@@ -34,11 +34,19 @@ memory — verify current stars/license/activity before depending on anything.
 
 ### 2. Funnels, landing pages, lead capture
 
+**Decision (2026-09-12): build our own.** Evaluated adopting/embedding
+OpenFunnels or Mautic instead of a custom Phase 5 builder; decided against
+it — we need funnel pages, lead capture, and automation living in the same
+Postgres/Prisma schema as CRM/Academy/Orders (already modeled in
+`packages/db/prisma/schema.prisma`), and neither project shares our stack or
+data model closely enough to embed without fighting it. The projects below
+stay as *reading material* for Phase 5/6 design, not dependencies.
+
 | Project | Language | Notes | Relevance to us |
 |---|---|---|---|
-| [OpenFunnels](https://github.com/aialvi/openfunnels) | TypeScript | Open-source funnel builder + "CRM-lite": drag-and-drop page editor, starter templates, custom domains, lead-capture forms, contact records, attribution analytics, A/B experiments. Directly the closest existing analog to our Phase 5 funnel builder. | **Read closely before Phase 5.** Same problem (funnel stages → pages → lead capture → CRM record) in the same language. Good source for the page-builder JSON shape and attribution/analytics event model — compare against our `FunnelStep.content: Json` and `FunnelVisit`/`FunnelSubmission` tables. |
+| [OpenFunnels](https://github.com/aialvi/openfunnels) | TypeScript | Open-source funnel builder + "CRM-lite": drag-and-drop page editor, starter templates, custom domains, lead-capture forms, contact records, attribution analytics, A/B experiments. Directly the closest existing analog to our Phase 5 funnel builder. | **Read closely before Phase 5.** Same problem (funnel stages → pages → lead capture → CRM record) in the same language. Good source for the page-builder JSON shape and attribution/analytics event model — compare against our `FunnelStep.content: Json` and `FunnelVisit`/`FunnelSubmission` tables. Not adopted as a dependency (see decision above). |
 | [Autonnel](https://autonnel.com/) | — | Open-source funnel builder for e-commerce (landing/checkout/upsell pages), integrates with Shopify/WooCommerce or their own "Picocart". | Reference for checkout→upsell page sequencing, which maps to our `FunnelStepType.CHECKOUT`/`UPSELL`. |
-| [Mautic](https://github.com/mautic/mautic) | PHP | The largest open-source marketing-automation project (~7k+ stars, 134 repos). Visual campaign builder: multi-step workflows, branching/delays/conditions, triggers on form submission/page visit/email engagement, email + SMS + push. | **Best reference for Phase 6's automation sequences.** Its campaign-builder data model (triggers, decisions, time delays, branches) is the mature version of our `Sequence`/`SequenceStep`/`SequenceEnrollment` tables. Different language (PHP/Symfony) so not a dependency candidate, but worth reading their campaign event schema before extending ours beyond linear sequences. |
+| [Mautic](https://github.com/mautic/mautic) | PHP | The largest open-source marketing-automation project (~7k+ stars, 134 repos). Visual campaign builder: multi-step workflows, branching/delays/conditions, triggers on form submission/page visit/email engagement, email + SMS + push. | **Best reference for Phase 6's automation sequences.** Its campaign-builder data model (triggers, decisions, time delays, branches) is the mature version of our `Sequence`/`SequenceStep`/`SequenceEnrollment` tables. Different language (PHP/Symfony) so not a dependency candidate, but worth reading their campaign event schema before extending ours beyond linear sequences. Not adopted as a dependency (see decision above). |
 
 ### 3. Academy / LMS (courses, modules, lessons, drip, certificates)
 
