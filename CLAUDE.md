@@ -18,8 +18,8 @@ A business platform combining:
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | Scaffold, auth, full DB schema, first Railway deploy | ✅ done (this commit) |
-| 2 | CRM core (contacts, companies, deals, tasks, notes, timeline UI) | not started |
+| 1 | Scaffold, auth, full DB schema, first Railway deploy | ✅ done |
+| 2 | CRM core (contacts, companies, deals, tasks, notes, timeline UI) | ✅ done (this commit) |
 | 3 | Stripe integration + webhooks (products, checkout, subscriptions) | not started |
 | 4 | Academy (courses, enrollment, progress, certificates) | not started |
 | 5 | Website, client portal, funnel builder | not started |
@@ -166,6 +166,45 @@ before there's real business logic to test.
   (this is what runs automatically on every Railway deploy — see below)
 - `npm run db:generate` — regenerates the Prisma client after a schema change
 - `npm run db:seed` — re-runs `packages/db/prisma/seed.ts`
+
+## CRM (Phase 2)
+
+- Lives under `apps/web/src/app/staff/*` — gated by `middleware.ts` to
+  `ADMIN`/`STAFF` (customers never see it). Pages: `contacts`, `companies`,
+  `deals` (pipeline board grouped by stage), `tasks`.
+- Business logic (not just CRUD) lives in `apps/web/src/lib/crm/*.ts` —
+  `deals.ts` (`createDeal`, `moveDealStage`), `notes.ts`, `tasks.ts` — kept
+  separate from the page components so it's unit-testable with a mocked
+  `@platform/db` (see the `.test.ts` files alongside each). Plain `contacts.ts`/
+  `companies.ts` CRUD stayed thin enough not to need the same treatment.
+- Every deal-affecting or timeline-worthy action (stage move, note, task)
+  writes an `Activity` row in the same service function, never as an
+  afterthought in the page/route — that's what keeps the timeline complete.
+- **Closing a deal is driven by data, not code**: `PipelineStage.isWon` /
+  `isLost` flags mark which stage(s) close a deal. `moveDealStage` checks
+  those flags and sets `Deal.status`/`closedAt` + logs `DEAL_WON`/`DEAL_LOST`
+  instead of a plain `STAGE_CHANGED` when moving into one. A closed deal
+  (`status != OPEN`) refuses further stage moves. If you add a pipeline or
+  change stage names, reconcile these flags — the seed script does this via
+  `updateMany` on every run rather than only at creation, precisely because
+  an existing pipeline from a previous seed run won't get new stage fields
+  otherwise (this bit us once during Phase 2 — moving a deal into "Won" that
+  had `isWon: false` because the flag was added after the pipeline already
+  existed silently logged `STAGE_CHANGED` instead of closing the deal).
+- Mutations use Next.js Server Actions (`"use server"`), not a separate API
+  layer — forms post directly to actions in `staff/*/actions.ts` or the
+  cross-resource `staff/shared-actions.ts` (notes/tasks, used from both
+  contact and deal detail pages). Every action re-checks the role via
+  `requireStaffSession()` (`apps/web/src/lib/require-staff.ts`) even though
+  middleware already gates the route — defense in depth, since a server
+  action is invocable directly.
+- The deal board is stage columns with a move-to-stage `<select>` + submit,
+  not drag-and-drop — deliberately, to avoid pulling in a DnD library for
+  Phase 2. Revisit if/when the UI gets a real design pass.
+- Pages under `staff/` set `export const dynamic = "force-dynamic"` (on the
+  layout, inherited by all of them) — they read live, per-request DB state
+  and must never be statically prerendered at build time (which would also
+  just fail: there's no `DATABASE_URL` in the build environment).
 
 ## Deploying to Railway
 
