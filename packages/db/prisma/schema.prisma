@@ -1,0 +1,786 @@
+// Intra Success Academy — database schema
+// Covers: auth, CRM, funnels + automation, academy/courses, orders/payments.
+// See CLAUDE.md for conventions (money stored as integer cents, soft deletes
+// avoided in favor of status enums, etc).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// Auth (Auth.js / NextAuth — PrismaAdapter shape) + platform roles
+// =============================================================================
+
+enum Role {
+  ADMIN
+  STAFF
+  CUSTOMER
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  password      String? // bcrypt hash; null for OAuth-only users
+  role          Role      @default(CUSTOMER)
+  stripeCustomerId String? @unique
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts Account[]
+  sessions Session[]
+
+  // CRM: a portal user may be linked to exactly one CRM contact
+  contact Contact?
+
+  // CRM ownership (staff/admin)
+  ownedContacts Contact[] @relation("ContactOwner")
+  ownedDeals    Deal[]    @relation("DealOwner")
+  assignedTasks Task[]    @relation("TaskAssignee")
+  authoredNotes Note[]    @relation("NoteAuthor")
+  activities    Activity[] @relation("ActivityActor")
+
+  // Academy
+  enrollments    Enrollment[]
+  lessonProgress LessonProgress[]
+  certificates   Certificate[]
+
+  // Orders / billing
+  orders        Order[]
+  subscriptions Subscription[]
+
+  @@index([role])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// =============================================================================
+// CRM: contacts, companies, deals/pipeline, tasks, notes, activity timeline
+// =============================================================================
+
+model Company {
+  id        String   @id @default(cuid())
+  name      String
+  domain    String?
+  industry  String?
+  website   String?
+  notes     String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  contacts Contact[]
+  deals    Deal[]
+
+  @@index([name])
+}
+
+model Contact {
+  id          String   @id @default(cuid())
+  email       String   @unique
+  firstName   String?
+  lastName    String?
+  phone       String?
+  source      String? // e.g. "funnel:evergreen-webinar", "manual", "import"
+  tags        String[] @default([])
+  customFields Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id])
+
+  ownerId String?
+  owner   User?   @relation("ContactOwner", fields: [ownerId], references: [id])
+
+  // Set once this contact creates a portal account (student/customer login)
+  userId String? @unique
+  user   User?   @relation(fields: [userId], references: [id])
+
+  deals              Deal[]
+  tasks              Task[]
+  notes              Note[]
+  activities         Activity[]
+  funnelSubmissions  FunnelSubmission[]
+  funnelVisits       FunnelVisit[]
+  sequenceEnrollments SequenceEnrollment[]
+  messageLogs        MessageLog[]
+  orders             Order[]
+
+  @@index([companyId])
+  @@index([ownerId])
+}
+
+enum DealStatus {
+  OPEN
+  WON
+  LOST
+}
+
+model Pipeline {
+  id        String   @id @default(cuid())
+  name      String
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  stages PipelineStage[]
+  deals  Deal[]
+}
+
+model PipelineStage {
+  id         String @id @default(cuid())
+  name       String
+  order      Int
+  probability Int? // 0-100, indicative likelihood of closing from this stage
+  // Moving a deal into a stage with either flag set closes it: sets
+  // Deal.status/closedAt and logs a DEAL_WON/DEAL_LOST activity.
+  isWon      Boolean @default(false)
+  isLost     Boolean @default(false)
+
+  pipelineId String
+  pipeline   Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+
+  deals Deal[]
+
+  @@unique([pipelineId, order])
+  @@index([pipelineId])
+}
+
+model Deal {
+  id         String     @id @default(cuid())
+  title      String
+  valueCents Int        @default(0)
+  currency   String     @default("usd")
+  status     DealStatus @default(OPEN)
+  closedAt   DateTime?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  contactId String
+  contact   Contact @relation(fields: [contactId], references: [id])
+
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id])
+
+  ownerId String?
+  owner   User?   @relation("DealOwner", fields: [ownerId], references: [id])
+
+  pipelineId String
+  pipeline   Pipeline @relation(fields: [pipelineId], references: [id])
+
+  stageId String
+  stage   PipelineStage @relation(fields: [stageId], references: [id])
+
+  // Set when a deal originates from a funnel lead capture / checkout
+  funnelId String?
+  funnel   Funnel? @relation(fields: [funnelId], references: [id])
+
+  tasks      Task[]
+  notes      Note[]
+  activities Activity[]
+  orders     Order[]
+
+  @@index([contactId])
+  @@index([stageId])
+  @@index([status])
+}
+
+model Task {
+  id          String    @id @default(cuid())
+  title       String
+  description String?   @db.Text
+  dueDate     DateTime?
+  completed   Boolean   @default(false)
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  assignedToId String?
+  assignedTo   User?   @relation("TaskAssignee", fields: [assignedToId], references: [id])
+
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id])
+
+  dealId String?
+  deal   Deal?   @relation(fields: [dealId], references: [id])
+
+  @@index([assignedToId])
+  @@index([contactId])
+  @@index([dealId])
+}
+
+model Note {
+  id        String   @id @default(cuid())
+  body      String   @db.Text
+  createdAt DateTime @default(now())
+
+  authorId String
+  author   User   @relation("NoteAuthor", fields: [authorId], references: [id])
+
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id])
+
+  dealId String?
+  deal   Deal?   @relation(fields: [dealId], references: [id])
+
+  @@index([contactId])
+  @@index([dealId])
+}
+
+enum ActivityType {
+  NOTE_ADDED
+  TASK_CREATED
+  TASK_COMPLETED
+  STAGE_CHANGED
+  DEAL_CREATED
+  DEAL_WON
+  DEAL_LOST
+  EMAIL_SENT
+  SMS_SENT
+  CALL_LOGGED
+  MEETING_LOGGED
+  FUNNEL_SUBMISSION
+  ORDER_PAID
+  SYSTEM
+}
+
+// Append-only activity timeline for a contact/deal.
+model Activity {
+  id        String       @id @default(cuid())
+  type      ActivityType
+  metadata  Json?
+  createdAt DateTime     @default(now())
+
+  actorId String?
+  actor   User?   @relation("ActivityActor", fields: [actorId], references: [id])
+
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id])
+
+  dealId String?
+  deal   Deal?   @relation(fields: [dealId], references: [id])
+
+  @@index([contactId, createdAt])
+  @@index([dealId, createdAt])
+}
+
+// =============================================================================
+// Funnels: landing pages, lead capture, multi-step sales funnels + automation
+// =============================================================================
+
+enum FunnelStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum FunnelStepType {
+  AD
+  LANDING
+  OPT_IN
+  OFFER
+  CHECKOUT
+  UPSELL
+  THANK_YOU
+  CUSTOM
+}
+
+model Funnel {
+  id          String       @id @default(cuid())
+  name        String
+  slug        String       @unique
+  description String?
+  status      FunnelStatus @default(DRAFT)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  steps       FunnelStep[]
+  deals       Deal[]
+  visits      FunnelVisit[]
+  submissions FunnelSubmission[]
+  sequences   Sequence[]
+  orders      Order[]
+}
+
+// A step IS a page: its `content` holds the builder's page JSON (blocks/layout).
+model FunnelStep {
+  id      String         @id @default(cuid())
+  type    FunnelStepType
+  name    String
+  slug    String
+  order   Int
+  content Json? // page builder JSON — structure owned by the funnel builder UI
+
+  funnelId String
+  funnel   Funnel @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+
+  visits      FunnelVisit[]
+  submissions FunnelSubmission[]
+
+  @@unique([funnelId, slug])
+  @@unique([funnelId, order])
+  @@index([funnelId])
+}
+
+// One row per page view — the raw material for visits/conversion/drop-off analytics.
+model FunnelVisit {
+  id        String   @id @default(cuid())
+  sessionId String // anonymous visitor/session id (cookie-based)
+  referrer  String?
+  utmSource String?
+  utmMedium String?
+  utmCampaign String?
+  createdAt DateTime @default(now())
+
+  funnelId String
+  funnel   Funnel @relation(fields: [funnelId], references: [id])
+
+  funnelStepId String
+  funnelStep   FunnelStep @relation(fields: [funnelStepId], references: [id])
+
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id])
+
+  @@index([funnelId, funnelStepId, createdAt])
+  @@index([sessionId])
+}
+
+// A lead-capture form submission; writes/links a Contact (+ optionally a Deal).
+model FunnelSubmission {
+  id        String   @id @default(cuid())
+  data      Json // raw form fields submitted
+  createdAt DateTime @default(now())
+
+  funnelId String
+  funnel   Funnel @relation(fields: [funnelId], references: [id])
+
+  funnelStepId String
+  funnelStep   FunnelStep @relation(fields: [funnelStepId], references: [id])
+
+  contactId String
+  contact   Contact @relation(fields: [contactId], references: [id])
+
+  @@index([funnelId, createdAt])
+  @@index([contactId])
+}
+
+// --- Automation sequences (email/SMS), provider-agnostic -------------------
+
+enum SequenceTrigger {
+  FUNNEL_STAGE_ENTERED
+  ABANDONED_CHECKOUT
+  WELCOME
+  MANUAL
+}
+
+model Sequence {
+  id        String          @id @default(cuid())
+  name      String
+  trigger   SequenceTrigger
+  active    Boolean         @default(true)
+  createdAt DateTime        @default(now())
+
+  funnelId String?
+  funnel   Funnel? @relation(fields: [funnelId], references: [id])
+
+  steps       SequenceStep[]
+  enrollments SequenceEnrollment[]
+
+  @@index([funnelId])
+}
+
+enum MessageChannel {
+  EMAIL
+  SMS
+}
+
+model SequenceStep {
+  id          String         @id @default(cuid())
+  order       Int
+  channel     MessageChannel
+  delayMinutes Int           @default(0) // delay after previous step (or enrollment)
+  subject     String? // email only
+  body        String         @db.Text
+
+  sequenceId String
+  sequence   Sequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+
+  messageLogs MessageLog[]
+
+  @@unique([sequenceId, order])
+  @@index([sequenceId])
+}
+
+enum SequenceEnrollmentStatus {
+  ACTIVE
+  COMPLETED
+  CANCELED
+}
+
+model SequenceEnrollment {
+  id               String                   @id @default(cuid())
+  status           SequenceEnrollmentStatus @default(ACTIVE)
+  currentStepOrder Int                      @default(0)
+  startedAt        DateTime                 @default(now())
+  completedAt      DateTime?
+
+  sequenceId String
+  sequence   Sequence @relation(fields: [sequenceId], references: [id])
+
+  contactId String
+  contact   Contact @relation(fields: [contactId], references: [id])
+
+  @@unique([sequenceId, contactId])
+  @@index([contactId])
+}
+
+enum MessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+}
+
+// Provider-agnostic send log (Resend for email, Twilio for SMS today).
+model MessageLog {
+  id                String         @id @default(cuid())
+  channel           MessageChannel
+  provider          String // "resend" | "twilio" | future providers
+  providerMessageId String?
+  status            MessageStatus  @default(QUEUED)
+  error             String?
+  sentAt            DateTime?
+  createdAt         DateTime       @default(now())
+
+  contactId String
+  contact   Contact @relation(fields: [contactId], references: [id])
+
+  sequenceStepId String?
+  sequenceStep   SequenceStep? @relation(fields: [sequenceStepId], references: [id])
+
+  @@index([contactId])
+}
+
+// =============================================================================
+// Academy: courses → modules → lessons, enrollment, progress, certificates
+// =============================================================================
+
+enum CoursePriceType {
+  FREE
+  PAID
+  MEMBERSHIP
+}
+
+model Course {
+  id              String          @id @default(cuid())
+  title           String
+  slug            String          @unique
+  description     String?         @db.Text
+  priceType       CoursePriceType @default(PAID)
+  priceCents      Int             @default(0)
+  published       Boolean         @default(false)
+  stripeProductId String?
+  stripePriceId   String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  modules      Module[]
+  enrollments  Enrollment[]
+  certificates Certificate[]
+  orders       Order[]
+  products     Product[]
+
+  prerequisites Course[] @relation("CoursePrerequisites")
+  requiredFor   Course[] @relation("CoursePrerequisites")
+
+  @@index([published])
+}
+
+model Module {
+  id    String @id @default(cuid())
+  title String
+  order Int
+
+  courseId String
+  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  lessons Lesson[]
+
+  @@unique([courseId, order])
+  @@index([courseId])
+}
+
+enum LessonType {
+  VIDEO
+  TEXT
+  DOWNLOAD
+  QUIZ
+}
+
+enum VideoProvider {
+  MUX
+  VIMEO
+}
+
+model Lesson {
+  id           String        @id @default(cuid())
+  title        String
+  order        Int
+  type         LessonType
+  content      String?       @db.Text // rich text for TEXT lessons, instructions for others
+  videoProvider VideoProvider?
+  videoId      String? // Mux playback ID or Vimeo video ID
+  dripDelayDays Int?         // days after enrollment before this lesson unlocks; null = immediate
+
+  moduleId String
+  module   Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  prerequisiteLessonId String?
+  prerequisiteLesson   Lesson?  @relation("LessonPrerequisite", fields: [prerequisiteLessonId], references: [id])
+  dependents           Lesson[] @relation("LessonPrerequisite")
+
+  downloads LessonDownload[]
+  quiz      Quiz?
+  progress  LessonProgress[]
+
+  @@unique([moduleId, order])
+  @@index([moduleId])
+}
+
+model LessonDownload {
+  id       String @id @default(cuid())
+  fileName String
+  fileUrl  String // Cloudflare R2 / S3 object URL
+
+  lessonId String
+  lesson   Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@index([lessonId])
+}
+
+// Kept intentionally simple (JSON question bank) — a dedicated question/answer
+// schema can replace this if quiz analytics become a requirement later.
+model Quiz {
+  id        String @id @default(cuid())
+  questions Json
+
+  lessonId String @unique
+  lesson   Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+}
+
+enum EnrollmentSource {
+  STRIPE_PURCHASE
+  MEMBERSHIP
+  MANUAL
+  FREE
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+model Enrollment {
+  id          String           @id @default(cuid())
+  source      EnrollmentSource
+  status      EnrollmentStatus @default(ACTIVE)
+  enrolledAt  DateTime         @default(now())
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  courseId String
+  course   Course @relation(fields: [courseId], references: [id])
+
+  certificates Certificate[]
+
+  @@unique([userId, courseId])
+  @@index([courseId])
+}
+
+model LessonProgress {
+  id                  String    @id @default(cuid())
+  completed           Boolean   @default(false)
+  completedAt         DateTime?
+  videoProgressSeconds Int      @default(0)
+  updatedAt           DateTime  @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  lessonId String
+  lesson   Lesson @relation(fields: [lessonId], references: [id])
+
+  @@unique([userId, lessonId])
+  @@index([lessonId])
+}
+
+model Certificate {
+  id              String   @id @default(cuid())
+  issuedAt        DateTime @default(now())
+  certificateUrl  String? // generated PDF stored in R2/S3
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  courseId String
+  course   Course @relation(fields: [courseId], references: [id])
+
+  enrollmentId String
+  enrollment   Enrollment @relation(fields: [enrollmentId], references: [id])
+
+  @@unique([userId, courseId])
+}
+
+// =============================================================================
+// Orders / Payments (Stripe) — one-time purchases + subscriptions/memberships
+// =============================================================================
+
+enum ProductType {
+  COURSE
+  FUNNEL_OFFER
+  MEMBERSHIP
+}
+
+model Product {
+  id              String      @id @default(cuid())
+  name            String
+  type            ProductType
+  priceCents      Int
+  currency        String      @default("usd")
+  // Stripe Products/Prices are the source of truth (managed in the Stripe
+  // Dashboard or API) and synced in here via product.*/price.* webhooks —
+  // see apps/web/src/lib/billing/webhook-handlers.ts. `type` and `courseId`
+  // come from the Stripe Product's metadata (metadata.type, metadata.courseId).
+  stripeProductId String?     @unique
+  stripePriceId   String?     @unique
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  courseId String?
+  course   Course? @relation(fields: [courseId], references: [id])
+
+  orders Order[]
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  REFUNDED
+  CANCELED
+  FAILED
+}
+
+model Order {
+  id                      String      @id @default(cuid())
+  email                   String
+  amountCents             Int
+  currency                String      @default("usd")
+  status                  OrderStatus @default(PENDING)
+  stripeCheckoutSessionId String?     @unique
+  stripePaymentIntentId   String?     @unique
+  createdAt               DateTime    @default(now())
+  updatedAt               DateTime    @updatedAt
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id])
+
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id])
+
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id])
+
+  courseId String?
+  course   Course? @relation(fields: [courseId], references: [id])
+
+  dealId String?
+  deal   Deal?   @relation(fields: [dealId], references: [id])
+
+  funnelId String?
+  funnel   Funnel? @relation(fields: [funnelId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  TRIALING
+  PAST_DUE
+  CANCELED
+  INCOMPLETE
+}
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  stripeSubscriptionId String             @unique
+  stripeCustomerId     String
+  plan                 String
+  status               SubscriptionStatus
+  currentPeriodEnd     DateTime
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+// Idempotency log for inbound Stripe webhook events.
+model WebhookEvent {
+  id            String   @id @default(cuid())
+  stripeEventId String   @unique
+  type          String
+  payload       Json
+  processedAt   DateTime?
+  createdAt     DateTime @default(now())
+}
