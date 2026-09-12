@@ -46,7 +46,9 @@ export async function createDeal(input: CreateDealInput) {
 // marked isWon/isLost, this also closes the deal (status + closedAt) and
 // logs a DEAL_WON/DEAL_LOST activity instead of a plain STAGE_CHANGED one,
 // so the timeline reads "won" rather than "moved to stage: Won".
-export async function moveDealStage(dealId: string, newStageId: string, actorId: string) {
+// `actorId` is omitted for system-triggered moves (e.g. a Stripe webhook
+// closing a deal on payment) — Activity.actorId is nullable for exactly this.
+export async function moveDealStage(dealId: string, newStageId: string, actorId?: string) {
   const deal = await prisma.deal.findUniqueOrThrow({ where: { id: dealId } });
 
   if (deal.status !== DealStatus.OPEN) {

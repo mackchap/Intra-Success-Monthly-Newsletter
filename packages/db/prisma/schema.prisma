@@ -30,6 +30,7 @@ model User {
   image         String?
   password      String? // bcrypt hash; null for OAuth-only users
   role          Role      @default(CUSTOMER)
+  stripeCustomerId String? @unique
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -530,6 +531,7 @@ model Course {
   enrollments  Enrollment[]
   certificates Certificate[]
   orders       Order[]
+  products     Product[]
 
   prerequisites Course[] @relation("CoursePrerequisites")
   requiredFor   Course[] @relation("CoursePrerequisites")
@@ -692,9 +694,17 @@ model Product {
   type            ProductType
   priceCents      Int
   currency        String      @default("usd")
-  stripeProductId String?
-  stripePriceId   String?
+  // Stripe Products/Prices are the source of truth (managed in the Stripe
+  // Dashboard or API) and synced in here via product.*/price.* webhooks —
+  // see apps/web/src/lib/billing/webhook-handlers.ts. `type` and `courseId`
+  // come from the Stripe Product's metadata (metadata.type, metadata.courseId).
+  stripeProductId String?     @unique
+  stripePriceId   String?     @unique
   createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  courseId String?
+  course   Course? @relation(fields: [courseId], references: [id])
 
   orders Order[]
 }

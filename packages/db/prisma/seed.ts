@@ -167,6 +167,53 @@ async function main() {
   }
 
   console.log(`Seeded ${contactsData.length} sample contacts + deals across ${acme.name} and ${globex.name}`);
+
+  // A sample customer login for exercising checkout/portal locally.
+  const customer = await prisma.user.upsert({
+    where: { email: "customer@example.com" },
+    update: {},
+    create: {
+      email: "customer@example.com",
+      name: "Cam Customer",
+      role: Role.CUSTOMER,
+      password: await hash("changeme123", 10),
+    },
+  });
+  console.log(`Customer user ready: ${customer.email} (password: changeme123)`);
+
+  // A sample course + product so /products/[id] has something to show.
+  // No stripePriceId here — that only ever gets set by the price.* webhook
+  // syncing a real Stripe Price, which needs real Stripe API keys this seed
+  // script doesn't have. Create the matching Product in the Stripe Dashboard
+  // (test mode) with metadata `type=COURSE` and `courseId=seed-course-intra`
+  // to make this purchasable locally.
+  const course = await prisma.course.upsert({
+    where: { id: "seed-course-intra" },
+    update: {},
+    create: {
+      id: "seed-course-intra",
+      title: "Intrapreneurship Fundamentals",
+      slug: "intrapreneurship-fundamentals",
+      description: "A sample course seeded for local Stripe checkout testing.",
+      priceType: "PAID",
+      priceCents: 9900,
+      published: true,
+    },
+  });
+
+  await prisma.product.upsert({
+    where: { id: "seed-product-intra-course" },
+    update: {},
+    create: {
+      id: "seed-product-intra-course",
+      name: course.title,
+      type: "COURSE",
+      priceCents: course.priceCents,
+      courseId: course.id,
+    },
+  });
+
+  console.log(`Sample course + product ready: ${course.title} (/products/seed-product-intra-course)`);
 }
 
 main()

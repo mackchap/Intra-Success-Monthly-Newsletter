@@ -19,8 +19,8 @@ A business platform combining:
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Scaffold, auth, full DB schema, first Railway deploy | ✅ done |
-| 2 | CRM core (contacts, companies, deals, tasks, notes, timeline UI) | ✅ done (this commit) |
-| 3 | Stripe integration + webhooks (products, checkout, subscriptions) | not started |
+| 2 | CRM core (contacts, companies, deals, tasks, notes, timeline UI) | ✅ done |
+| 3 | Stripe integration + webhooks (products, checkout, subscriptions) | ✅ done (this commit) |
 | 4 | Academy (courses, enrollment, progress, certificates) | not started |
 | 5 | Website, client portal, funnel builder | not started |
 | 6 | Automation sequences, AI agents, analytics dashboard | not started |
@@ -205,6 +205,70 @@ before there's real business logic to test.
   layout, inherited by all of them) — they read live, per-request DB state
   and must never be statically prerendered at build time (which would also
   just fail: there's no `DATABASE_URL` in the build environment).
+
+## Payments (Phase 3)
+
+- **Stripe Products/Prices are managed in the Stripe Dashboard (or API), not
+  in our admin UI.** They sync into our `Product` table via
+  `product.created`/`product.updated`/`price.created`/`price.updated`
+  webhooks (`apps/web/src/lib/billing/webhook-handlers.ts`). This mirrors the
+  pattern most production Stripe integrations use (see the `dj-stripe`/Vercel
+  references in `PRD.md`) and means Phase 3 needed no outbound "create a
+  Stripe product" API call from our app — only inbound webhook handling,
+  which is fully testable without real Stripe API keys (see below). To make
+  a course purchasable, create its Stripe Product with metadata
+  `type=COURSE` and `courseId=<our Course id>` (`type=MEMBERSHIP` for a
+  recurring subscription product; anything else/missing defaults to
+  `FUNNEL_OFFER`). `/admin/products` is a read-only view of what's synced.
+- **Checkout**: `apps/web/src/lib/billing/checkout.ts` creates a `PENDING`
+  `Order` row *before* redirecting to Stripe, storing its id in the Checkout
+  Session's metadata and its `stripeCheckoutSessionId` on the Order — so the
+  webhook handler updates a known row by that id instead of reconstructing
+  order details from the Stripe event. One Stripe Customer per `User`
+  (`User.stripeCustomerId`, created lazily on first purchase and reused for
+  every subsequent purchase, subscription, and the billing portal).
+- **Webhooks** (`/api/webhooks/stripe`, `apps/web/src/lib/billing/webhook-handlers.ts`):
+  - `checkout.session.completed` → marks the `Order` `PAID`; if it has a
+    `courseId`, upserts an `ACTIVE`/`STRIPE_PURCHASE` `Enrollment`; if it has
+    a `dealId`, closes that CRM deal as won by reusing `moveDealStage` from
+    the Phase 2 CRM service layer (finds the pipeline's `isWon` stage) —
+    a deliberate cross-phase reuse rather than duplicating close-deal logic.
+  - `charge.refunded` → marks the `Order` `REFUNDED` and revokes the
+    matching `Enrollment` (`REVOKED` + `revokedAt`).
+  - `customer.subscription.created`/`updated`/`deleted` → upserts/cancels
+    the `Subscription` row. **Revoking membership-gated course access on
+    cancellation is explicitly deferred to Phase 4** — `Enrollment` doesn't
+    yet track which subscription granted it, because Academy's access-control
+    rules (which courses require an active membership) don't exist yet.
+    Phase 4's access checks should read `Subscription.status` directly for
+    `MEMBERSHIP`-tier courses rather than inventing an Enrollment link now.
+  - Idempotency: every event is recorded in `WebhookEvent` keyed by Stripe's
+    event id before dispatching; an event whose `processedAt` is already set
+    is skipped. The route returns `500` (not `200`) on a handler error so
+    Stripe retries — safe, because the idempotency check means a retry only
+    re-attempts work that didn't finish, not already-applied side effects.
+  - `apps/web/src/lib/stripe.ts` builds the Stripe client **lazily** (behind
+    a `Proxy`), not at module import time — Next.js evaluates route modules
+    during `next build`'s page-data collection, before any `.env` is loaded
+    for that step (see the `dev`/`build` script split above), so an eager
+    `new Stripe(key)` at import time broke the production build.
+- **Customer portal**: `apps/web/src/lib/billing/portal.ts` creates a
+  Stripe-hosted Billing Portal session for the signed-in user's Stripe
+  customer; surfaced as a "Manage billing" button on `/portal`.
+- **Testing without real Stripe keys**: `.env` needs *some* string for
+  `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` for the app to boot and for
+  webhook signature verification to run (that's pure local HMAC — Stripe's
+  `Stripe.webhooks.generateTestHeaderString()` helper signs a payload with
+  any secret you choose, no network call), but outbound calls
+  (`checkout.sessions.create`, `customers.create`, `billingPortal.sessions.create`)
+  will fail without a real test-mode `sk_test_...` key. Phase 3 was verified
+  by: unit tests mocking the `stripe` client for every handler/checkout/portal
+  function, plus a live check hitting the running dev server's
+  `/api/webhooks/stripe` with a genuinely HMAC-signed test event (valid,
+  replayed, badly-signed, and missing-signature cases) against real
+  Postgres — confirming actual DB side effects, not just mocked ones. Once
+  real test-mode keys are set, exercise checkout/portal live with
+  `stripe listen` per the section below.
 
 ## Deploying to Railway
 
