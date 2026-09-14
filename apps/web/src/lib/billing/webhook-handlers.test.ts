@@ -138,14 +138,19 @@ describe("handleCheckoutSessionCompleted", () => {
       contactId: "contact_1",
       amountCents: 5000,
     } as never);
-    vi.mocked(prisma.deal.findUnique).mockResolvedValue({ id: "deal_1", status: "OPEN", pipelineId: "pipeline_1" } as never);
+    vi.mocked(prisma.deal.findUnique).mockResolvedValue({
+      id: "deal_1",
+      tenantId: "tenant-1",
+      status: "OPEN",
+      pipelineId: "pipeline_1",
+    } as never);
     vi.mocked(prisma.pipelineStage.findFirst).mockResolvedValue({ id: "stage_won" } as never);
 
     await handleCheckoutSessionCompleted({ id: "cs_2" } as unknown as Stripe.Checkout.Session);
 
     expect(moveDealStage).toHaveBeenCalledWith("deal_1", "stage_won");
     expect(prisma.activity.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({ type: "ORDER_PAID", dealId: "deal_1", contactId: "contact_1" }),
+      data: expect.objectContaining({ tenantId: "tenant-1", type: "ORDER_PAID", dealId: "deal_1", contactId: "contact_1" }),
     });
   });
 

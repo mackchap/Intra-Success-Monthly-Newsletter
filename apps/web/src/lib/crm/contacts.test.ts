@@ -26,7 +26,7 @@ describe("createContact", () => {
   it("creates the contact and enqueues background lead qualification", async () => {
     vi.mocked(prisma.contact.create).mockResolvedValue({ id: "contact_1", email: "new@example.com" } as never);
 
-    const contact = await createContact({ email: "new@example.com" });
+    const contact = await createContact({ tenantId: "tenant-1", email: "new@example.com" });
 
     expect(contact).toEqual({ id: "contact_1", email: "new@example.com" });
     expect(enqueueLeadQualification).toHaveBeenCalledWith("contact_1");
@@ -36,7 +36,7 @@ describe("createContact", () => {
     vi.mocked(prisma.contact.create).mockResolvedValue({ id: "contact_1", email: "new@example.com" } as never);
     vi.mocked(enqueueLeadQualification).mockRejectedValue(new Error("Redis is down"));
 
-    const contact = await createContact({ email: "new@example.com" });
+    const contact = await createContact({ tenantId: "tenant-1", email: "new@example.com" });
 
     expect(contact).toEqual({ id: "contact_1", email: "new@example.com" });
   });

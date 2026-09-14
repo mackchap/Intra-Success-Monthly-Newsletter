@@ -45,6 +45,7 @@ describe("qualifyLead", () => {
     } as never);
     vi.mocked(prisma.contact.findUniqueOrThrow).mockResolvedValue({
       id: "contact_1",
+      tenantId: "tenant-1",
       customFields: null,
       tags: ["existing-tag"],
     } as never);
@@ -80,6 +81,7 @@ describe("qualifyLead", () => {
     });
     expect(prisma.activity.create).toHaveBeenCalledWith({
       data: {
+        tenantId: "tenant-1",
         type: "SYSTEM",
         contactId: "contact_1",
         metadata: { action: "ai_lead_qualification", score: 8, summary: "Strong intrapreneurship fit.", tags: ["high-intent"] },

@@ -2,6 +2,7 @@ import { prisma, ActivityType } from "@platform/db";
 import { ValidationError } from "./errors";
 
 export interface CreateNoteInput {
+  tenantId: string;
   body: string;
   authorId: string;
   contactId?: string;
@@ -17,6 +18,7 @@ export async function createNote(input: CreateNoteInput) {
 
   const note = await prisma.note.create({
     data: {
+      tenantId: input.tenantId,
       body: input.body,
       authorId: input.authorId,
       contactId: input.contactId,
@@ -26,6 +28,7 @@ export async function createNote(input: CreateNoteInput) {
 
   await prisma.activity.create({
     data: {
+      tenantId: input.tenantId,
       type: ActivityType.NOTE_ADDED,
       actorId: input.authorId,
       contactId: input.contactId,

@@ -21,17 +21,25 @@ describe("createNote", () => {
   });
 
   it("rejects a note with no contact or deal attached", async () => {
-    await expect(createNote({ body: "hi", authorId: "user-1" })).rejects.toThrow(ValidationError);
+    await expect(createNote({ tenantId: "tenant-1", body: "hi", authorId: "user-1" })).rejects.toThrow(
+      ValidationError,
+    );
     expect(prisma.note.create).not.toHaveBeenCalled();
   });
 
   it("creates a note attached to a contact and logs a NOTE_ADDED activity", async () => {
     vi.mocked(prisma.note.create).mockResolvedValue({ id: "note-1" } as never);
 
-    await createNote({ body: "Called, left voicemail", authorId: "user-1", contactId: "contact-1" });
+    await createNote({
+      tenantId: "tenant-1",
+      body: "Called, left voicemail",
+      authorId: "user-1",
+      contactId: "contact-1",
+    });
 
     expect(prisma.note.create).toHaveBeenCalledWith({
       data: {
+        tenantId: "tenant-1",
         body: "Called, left voicemail",
         authorId: "user-1",
         contactId: "contact-1",
@@ -46,7 +54,7 @@ describe("createNote", () => {
   it("creates a note attached to a deal only", async () => {
     vi.mocked(prisma.note.create).mockResolvedValue({ id: "note-2" } as never);
 
-    await createNote({ body: "Sent proposal", authorId: "user-1", dealId: "deal-1" });
+    await createNote({ tenantId: "tenant-1", body: "Sent proposal", authorId: "user-1", dealId: "deal-1" });
 
     expect(prisma.activity.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ type: "NOTE_ADDED", dealId: "deal-1" }),

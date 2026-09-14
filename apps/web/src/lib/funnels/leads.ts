@@ -2,6 +2,7 @@ import { prisma, ActivityType } from "@platform/db";
 import { ValidationError } from "@/lib/crm/errors";
 import { enqueueFunnelSubmissionTrigger } from "@/lib/queues/sequence-triggers";
 import { enqueueLeadQualification } from "@/lib/queues/lead-qualification";
+import { getLegacyTenantId } from "@/lib/accounts/legacy-tenant";
 
 export interface CaptureLeadInput {
   funnelId: string;
@@ -21,15 +22,20 @@ export async function captureLead(input: CaptureLeadInput) {
     throw new ValidationError("A lead capture form must collect an email address.");
   }
 
-  const existingContact = await prisma.contact.findUnique({ where: { email } });
+  // Funnels aren't tenant-scoped yet (Phase 9) — every funnel lead lands on
+  // the one legacy tenant until then. See lib/accounts/legacy-tenant.ts.
+  const tenantId = await getLegacyTenantId();
+
+  const existingContact = await prisma.contact.findUnique({ where: { tenantId_email: { tenantId, email } } });
   const contact = await prisma.contact.upsert({
-    where: { email },
+    where: { tenantId_email: { tenantId, email } },
     update: {
       firstName: input.data.firstName || undefined,
       lastName: input.data.lastName || undefined,
       phone: input.data.phone || undefined,
     },
     create: {
+      tenantId,
       email,
       firstName: input.data.firstName || undefined,
       lastName: input.data.lastName || undefined,
@@ -50,13 +56,14 @@ export async function captureLead(input: CaptureLeadInput) {
   let deal = await prisma.deal.findFirst({ where: { contactId: contact.id, funnelId: input.funnelId } });
   if (!deal) {
     const pipeline = await prisma.pipeline.findFirstOrThrow({
-      where: { isDefault: true },
+      where: { tenantId, isDefault: true },
       include: { stages: { orderBy: { order: "asc" }, take: 1 } },
     });
     const funnel = await prisma.funnel.findUniqueOrThrow({ where: { id: input.funnelId } });
 
     deal = await prisma.deal.create({
       data: {
+        tenantId,
         title: `${funnel.name} — ${contact.email}`,
         contactId: contact.id,
         pipelineId: pipeline.id,
@@ -68,6 +75,7 @@ export async function captureLead(input: CaptureLeadInput) {
 
   await prisma.activity.create({
     data: {
+      tenantId,
       type: ActivityType.FUNNEL_SUBMISSION,
       contactId: contact.id,
       dealId: deal.id,

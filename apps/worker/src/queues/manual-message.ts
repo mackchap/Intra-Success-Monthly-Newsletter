@@ -34,8 +34,11 @@ export async function processManualMessageJob(data: ManualMessageJobData) {
     body: data.body,
   });
 
+  const contact = await prisma.contact.findUniqueOrThrow({ where: { id: data.contactId } });
+
   await prisma.activity.create({
     data: {
+      tenantId: contact.tenantId,
       type: data.channel === MessageChannel.EMAIL ? ActivityType.EMAIL_SENT : ActivityType.SMS_SENT,
       contactId: data.contactId,
       metadata: { subject: data.subject },

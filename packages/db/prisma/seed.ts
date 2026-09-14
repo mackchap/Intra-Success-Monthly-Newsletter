@@ -1,15 +1,36 @@
-import { PrismaClient, Role } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import { hash } from "bcryptjs";
 
 const prisma = new PrismaClient();
 
 async function main() {
+  // Phase 8: every CRM row belongs to a Tenant. This is the one tenant a
+  // fresh database starts with — the same slug the Phase 8 migration
+  // backfilled all pre-existing (pre-Phase-8) data onto, and the one
+  // lib/accounts/legacy-tenant.ts points not-yet-tenant-scoped modules
+  // (Funnels, Academy, Marketing, Orders) at until Phase 9.
+  const trialEndsAt = new Date();
+  trialEndsAt.setDate(trialEndsAt.getDate() + 14);
+
+  const tenant = await prisma.tenant.upsert({
+    where: { slug: "intra-success-academy" },
+    update: {},
+    create: {
+      name: "Intra Success Academy",
+      slug: "intra-success-academy",
+      platformSubscription: { create: { plan: "TRIAL", status: "TRIALING", trialEndsAt } },
+    },
+  });
+
+  console.log(`Tenant ready: ${tenant.name} (${tenant.id})`);
+
   // Default sales pipeline with a standard stage progression.
-  const existingPipeline = await prisma.pipeline.findFirst({ where: { isDefault: true } });
+  const existingPipeline = await prisma.pipeline.findFirst({ where: { tenantId: tenant.id, isDefault: true } });
   const pipeline =
     existingPipeline ??
     (await prisma.pipeline.create({
       data: {
+        tenantId: tenant.id,
         name: "Default Pipeline",
         isDefault: true,
         stages: {
@@ -50,12 +71,17 @@ async function main() {
     create: {
       email: adminEmail,
       name: "Admin",
-      role: Role.ADMIN,
+      isPlatformAdmin: true,
       password: await hash(adminPassword, 10),
     },
   });
+  await prisma.membership.upsert({
+    where: { userId_tenantId: { userId: admin.id, tenantId: tenant.id } },
+    update: {},
+    create: { userId: admin.id, tenantId: tenant.id, role: "OWNER" },
+  });
 
-  console.log(`Admin user ready: ${admin.email} (password: ${adminPassword})`);
+  console.log(`Admin user ready: ${admin.email} (password: ${adminPassword}) — platform admin + Owner of ${tenant.name}`);
 
   const staff = await prisma.user.upsert({
     where: { email: "staff@example.com" },
@@ -63,12 +89,16 @@ async function main() {
     create: {
       email: "staff@example.com",
       name: "Sam Staff",
-      role: Role.STAFF,
       password: await hash("changeme123", 10),
     },
   });
+  await prisma.membership.upsert({
+    where: { userId_tenantId: { userId: staff.id, tenantId: tenant.id } },
+    update: {},
+    create: { userId: staff.id, tenantId: tenant.id, role: "STAFF" },
+  });
 
-  console.log(`Staff user ready: ${staff.email} (password: changeme123)`);
+  console.log(`Staff user ready: ${staff.email} (password: changeme123) — Staff on ${tenant.name}`);
 
   // A handful of sample CRM records so Phase 2 has something to look at.
   const acme = await prisma.company.upsert({
@@ -76,6 +106,7 @@ async function main() {
     update: {},
     create: {
       id: "seed-company-acme",
+      tenantId: tenant.id,
       name: "Acme Corp",
       domain: "acme.example",
       industry: "Manufacturing",
@@ -87,6 +118,7 @@ async function main() {
     update: {},
     create: {
       id: "seed-company-globex",
+      tenantId: tenant.id,
       name: "Globex Inc",
       domain: "globex.example",
       industry: "Retail",
@@ -141,6 +173,7 @@ async function main() {
       update: {},
       create: {
         id: c.id,
+        tenantId: tenant.id,
         email: c.email,
         firstName: c.firstName,
         lastName: c.lastName,
@@ -155,6 +188,7 @@ async function main() {
       update: {},
       create: {
         id: `${c.id}-deal`,
+        tenantId: tenant.id,
         title: c.dealTitle,
         contactId: contact.id,
         companyId: c.companyId,
@@ -175,9 +209,13 @@ async function main() {
     create: {
       email: "customer@example.com",
       name: "Cam Customer",
-      role: Role.CUSTOMER,
       password: await hash("changeme123", 10),
     },
+  });
+  await prisma.membership.upsert({
+    where: { userId_tenantId: { userId: customer.id, tenantId: tenant.id } },
+    update: {},
+    create: { userId: customer.id, tenantId: tenant.id, role: "CUSTOMER" },
   });
   console.log(`Customer user ready: ${customer.email} (password: changeme123)`);
 

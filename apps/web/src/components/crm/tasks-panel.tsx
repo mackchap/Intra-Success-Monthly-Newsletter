@@ -1,13 +1,15 @@
 import type { Task } from "@platform/db";
-import { addTaskAction, completeTaskAction } from "@/app/staff/shared-actions";
+import { addTaskAction, completeTaskAction } from "@/app/a/[tenantId]/staff/shared-actions";
 import { formatDate } from "@/lib/format";
 
 export function TasksPanel({
   tasks,
+  tenantId,
   contactId,
   dealId,
 }: {
   tasks: Task[];
+  tenantId: string;
   contactId?: string;
   dealId?: string;
 }) {
@@ -15,6 +17,7 @@ export function TasksPanel({
     <div className="flex flex-col gap-3">
       <h2 className="font-medium">Tasks</h2>
       <form action={addTaskAction} className="flex flex-col gap-2 sm:flex-row">
+        <input type="hidden" name="tenantId" value={tenantId} />
         {contactId && <input type="hidden" name="contactId" value={contactId} />}
         {dealId && <input type="hidden" name="dealId" value={dealId} />}
         <input
@@ -40,6 +43,7 @@ export function TasksPanel({
             </div>
             {!task.completed && (
               <form action={completeTaskAction}>
+                <input type="hidden" name="tenantId" value={tenantId} />
                 <input type="hidden" name="taskId" value={task.id} />
                 {contactId && <input type="hidden" name="contactId" value={contactId} />}
                 {dealId && <input type="hidden" name="dealId" value={dealId} />}

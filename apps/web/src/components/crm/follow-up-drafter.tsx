@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { draftFollowUpEmailAction, sendFollowUpEmailAction } from "@/app/staff/contacts/[id]/agent-actions";
+import { draftFollowUpEmailAction, sendFollowUpEmailAction } from "@/app/a/[tenantId]/staff/contacts/[id]/agent-actions";
 
-export function FollowUpDrafter({ contactId }: { contactId: string }) {
+export function FollowUpDrafter({ tenantId, contactId }: { tenantId: string; contactId: string }) {
   const [draft, setDraft] = useState<{ subject: string; body: string } | null>(null);
   const [drafting, setDrafting] = useState(false);
   const [sending, setSending] = useState(false);
@@ -15,7 +15,7 @@ export function FollowUpDrafter({ contactId }: { contactId: string }) {
     setError(null);
     setSent(false);
     try {
-      const result = await draftFollowUpEmailAction(contactId);
+      const result = await draftFollowUpEmailAction(tenantId, contactId);
       setDraft(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to draft a follow-up email.");
@@ -29,7 +29,7 @@ export function FollowUpDrafter({ contactId }: { contactId: string }) {
     setSending(true);
     setError(null);
     try {
-      await sendFollowUpEmailAction(contactId, draft.subject, draft.body);
+      await sendFollowUpEmailAction(tenantId, contactId, draft.subject, draft.body);
       setSent(true);
       setDraft(null);
     } catch (err) {

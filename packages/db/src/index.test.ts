@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { Role } from "./index";
+import { MembershipRole } from "./index";
 
 describe("@platform/db exports", () => {
   it("re-exports generated Prisma enums", () => {
-    expect(Role.ADMIN).toBe("ADMIN");
-    expect(Role.STAFF).toBe("STAFF");
-    expect(Role.CUSTOMER).toBe("CUSTOMER");
+    expect(MembershipRole.OWNER).toBe("OWNER");
+    expect(MembershipRole.ADMIN).toBe("ADMIN");
+    expect(MembershipRole.STAFF).toBe("STAFF");
+    expect(MembershipRole.CUSTOMER).toBe("CUSTOMER");
   });
 });

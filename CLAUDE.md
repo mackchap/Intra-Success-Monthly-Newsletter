@@ -6,14 +6,18 @@ and how deploys to Railway work.
 
 ## What this is
 
-A business platform combining:
-1. **Website** — marketing site + client portal (Next.js)
-2. **CRM** — contacts, companies, deals/pipeline, tasks, notes, activity timeline
-3. **Funnels** — landing pages, lead capture, multi-step sales funnels, email/SMS automation
-4. **Academy** — courses, modules, lessons, enrollment, progress, certificates
-5. **Payments** — Stripe Checkout + Billing, webhooks driving CRM/Academy state
-6. **AI agents** — Anthropic API tool-calling agents that read/write CRM + Academy data
-7. **Marketing** — an AI agent that drafts (and, once approved, posts) Facebook/Instagram
+A multi-tenant business platform (competing with HighLevel — working brand
+names "Marlow"/"Kelvo") combining:
+1. **Tenancy** — every tenant (`Tenant`, one of your customers' businesses) has its own
+   team (`Membership`s with a role), billed separately from what it charges its own customers
+2. **Website** — marketing site + client portal (Next.js)
+3. **CRM** — contacts, companies, deals/pipeline, tasks, notes, activity timeline (tenant-scoped)
+4. **Funnels** — landing pages, lead capture, multi-step sales funnels, email/SMS automation
+5. **Academy** — courses, modules, lessons, enrollment, progress, certificates
+6. **Payments** — Stripe Checkout + Billing, webhooks driving CRM/Academy state; tenants'
+   own customer payments settle on the tenant's own connected Stripe account
+7. **AI agents** — Anthropic API tool-calling agents that read/write CRM + Academy data
+8. **Marketing** — an AI agent that drafts (and, once approved, posts) Facebook/Instagram
    campaigns, plus a research agent for marketing strategy recommendations
 
 ## Phased build plan
@@ -26,22 +30,32 @@ A business platform combining:
 | 4 | Academy (courses, enrollment, progress, certificates) | ✅ done |
 | 5 | Website, client portal, funnel builder | ✅ done |
 | 6 | Automation sequences, AI agents, analytics dashboard | ✅ done |
-| 7 | Marketing agents: Facebook/Instagram drafting + posting, strategy insights | ✅ done (this commit) |
+| 7 | Marketing agents: Facebook/Instagram drafting + posting, strategy insights | ✅ done |
+| 8 | Multi-tenant foundation: Tenant/Membership, Stripe Connect, platform billing, CRM tenant-scoped | ✅ done (this commit) |
+| 9 | Tenant-scope Funnels/Academy/Marketing/Orders; move their revenue onto Stripe Connect | ⬜ not started |
+| 10 | Directory module (multi-tenant local-business directory builder, AI concierge agent) | ⬜ not started |
 
 Each phase is built and reviewed before the next starts. Do not jump ahead —
 if you're an AI agent continuing this work, check this table and the git log
-before assuming what exists.
+before assuming what exists. **As of Phase 8, only the CRM module is
+tenant-scoped** — Funnels, Academy, Marketing, and Orders/Billing still
+operate on one implicit legacy tenant until Phase 9. See the Phase 8 section
+below before touching any of those modules.
 
 ## Stack
 
 - **Framework**: Next.js 15 (App Router), TypeScript, Tailwind CSS
 - **Database**: PostgreSQL via Prisma (`packages/db`)
 - **Auth**: Auth.js (NextAuth v5) — Credentials provider + Prisma adapter, JWT
-  sessions carrying a `role` claim (`ADMIN` / `STAFF` / `CUSTOMER`)
+  sessions carrying `isPlatformAdmin` only (Phase 8 removed the old global
+  `role` claim — see below for why per-tenant role isn't in the JWT)
+- **Multi-tenancy**: `Tenant`/`Membership` (Phase 8) — a `User` holds a role
+  per `Tenant`, checked fresh from the DB per request via `requireAccountRole()`
 - **Background jobs**: BullMQ + Redis, running as a separate worker process
   (`apps/worker`) — never inside the web process
 - **Payments**: Stripe (Checkout for one-time purchases, Billing for
-  subscriptions/memberships) — added in Phase 3
+  subscriptions/memberships) — added in Phase 3; Stripe Connect for tenant
+  revenue + a separate platform-subscription flow — added in Phase 8
 - **Email**: Resend — added in Phase 6 (interface kept provider-agnostic)
 - **SMS**: Twilio — added in Phase 6 (interface kept provider-agnostic)
 - **Video**: Mux (primary) / Vimeo embeds — no self-hosted video, added in Phase 4
@@ -61,7 +75,7 @@ before assuming what exists.
 │   ├── web/              Next.js app (marketing site, portal, admin/staff dashboards)
 │   │   ├── src/app/      App Router routes (pages + API routes)
 │   │   ├── src/auth.ts   Auth.js config (providers, callbacks, session shape)
-│   │   ├── src/middleware.ts   Role-based route protection
+│   │   ├── src/middleware.ts   Coarse auth gating (isPlatformAdmin + "is signed in")
 │   │   └── Dockerfile    Railway build for this service
 │   └── worker/           BullMQ worker process (background jobs, no HTTP server)
 │       ├── src/index.ts
@@ -173,16 +187,29 @@ before there's real business logic to test.
 - `npm run db:generate` — regenerates the Prisma client after a schema change
 - `npm run db:seed` — re-runs `packages/db/prisma/seed.ts`
 
-## CRM (Phase 2)
+## CRM (Phase 2, tenant-scoped since Phase 8)
 
-- Lives under `apps/web/src/app/staff/*` — gated by `middleware.ts` to
-  `ADMIN`/`STAFF` (customers never see it). Pages: `contacts`, `companies`,
-  `deals` (pipeline board grouped by stage), `tasks`.
+- Lives under `apps/web/src/app/a/[tenantId]/staff/*` (moved here from the
+  original bare `/staff/*` in Phase 8). `middleware.ts` only confirms a
+  session exists for `/a/:path*`; every page/action itself calls
+  `requireAccountRole(tenantId, minRole)` to check the signed-in user
+  actually has a `STAFF`+ Membership on *that* `tenantId` — see the Phase 8
+  section above for why the coarse/fine split. Pages: `contacts`,
+  `companies`, `deals` (pipeline board grouped by stage), `tasks`,
+  `settings/billing` (Phase 8: platform subscription + Stripe Connect status).
 - Business logic (not just CRUD) lives in `apps/web/src/lib/crm/*.ts` —
   `deals.ts` (`createDeal`, `moveDealStage`), `notes.ts`, `tasks.ts` — kept
   separate from the page components so it's unit-testable with a mocked
   `@platform/db` (see the `.test.ts` files alongside each). Plain `contacts.ts`/
-  `companies.ts` CRUD stayed thin enough not to need the same treatment.
+  `companies.ts` CRUD stayed thin enough not to need the same treatment. Every
+  `create*` function takes a `tenantId` and stamps it on both the row and any
+  `Activity` it logs; `moveDealStage`/`completeTask` instead read `tenantId`
+  off the record they already fetched, since it's already tenant-scoped by then.
+- Every form under `/a/[tenantId]/staff/*` carries `tenantId` as a hidden
+  input (Server Actions bound to a plain `<form action={fn}>` can't otherwise
+  receive it), and every action re-derives and re-checks it via
+  `requireAccountRole` rather than trusting the URL segment alone — the same
+  defense-in-depth posture every other mutation in this app already uses.
 - Every deal-affecting or timeline-worthy action (stage move, note, task)
   writes an `Activity` row in the same service function, never as an
   afterthought in the page/route — that's what keeps the timeline complete.
@@ -607,6 +634,91 @@ before there's real business logic to test.
   `SocialAccount` row — the full draft-request and insights-recommendation round trip, both of
   which made genuine HTTPS calls to Anthropic's real API and received a real `401 invalid API key`
   response rather than a mock, then displayed it inline exactly as designed.
+
+## Multi-tenancy foundation (Phase 8)
+
+- **Why this exists**: turning this from "a business platform for Intra Success Academy"
+  into "a platform other businesses run on" (the HighLevel-competitor goal) requires every
+  tenant's data to be isolated and every tenant's revenue to settle in *their own* bank
+  account, not ours. Phase 8 built that foundation and proved it end to end on the CRM
+  module; Phases 9-10 extend it to the rest of the app. This was scoped deliberately
+  narrow — see "What's still legacy" below — rather than touching all seven prior phases'
+  worth of code in one pass.
+- **`Tenant` is the tenant model, not `Account`**: Auth.js's Prisma adapter hardcodes the
+  Prisma Client accessor `prisma.account` for its own OAuth-account-linking table, so the
+  new tenant concept had to be named something else at the schema/code level. UI copy and
+  route segments (`/a/[tenantId]/...`) still say "account" since that's the natural
+  business term — only the Prisma model and TypeScript identifiers say `Tenant`.
+- **Role model**: a `User` no longer has one global `role`. Instead, `Membership` gives a
+  `User` a role (`OWNER`/`ADMIN`/`STAFF`/`CUSTOMER`) *per* `Tenant` — the same person can
+  own one business and staff another. `User.isPlatformAdmin` is a separate, orthogonal
+  flag for *your* team managing every tenant from `/platform-admin`; it has nothing to do
+  with any Membership. The old JWT `role` claim is gone — the JWT only carries
+  `isPlatformAdmin` (cheap to check at the Edge in `middleware.ts`), because per-tenant
+  role can't be: Next.js Middleware runs on the Edge runtime, which can't reach Prisma, so
+  there's no cheap way to keep a list of a user's tenant memberships fresh in the JWT
+  without either bloating it unboundedly or re-implementing session refresh. Instead,
+  `middleware.ts` only confirms *a* session exists for `/a/:path*` (same coarse gate it
+  already used for `/portal`), and `requireAccountRole(tenantId, minRole)`
+  (`lib/accounts/require-account.ts`) does the real, fresh-from-the-DB membership/role
+  check inside every Server Component, Server Action, and route handler that touches
+  tenant data — defense in depth, exactly the same split `requireStaffSession()` already
+  used for the old global role.
+- **Two separate Stripe relationships, on purpose**: a tenant's own customers' payments
+  (course sales, funnel offers, and eventually directory-listing upgrades) must never
+  settle into the platform's own Stripe account — commingling other businesses' money is a
+  real compliance/tax problem the moment tenants are real businesses, not just a scaling
+  nicety. So `Tenant.stripeConnectAccountId` is a Stripe Connect **Standard** account the
+  tenant onboards themselves (`lib/billing/connect.ts`, `/api/billing/connect/start` →
+  Stripe's hosted onboarding → `/api/billing/connect/callback`) — their dashboard, their
+  payout schedule, their tax settings. Separately, `PlatformSubscription` is what a tenant
+  pays *this platform* to use it at all (`lib/billing/platform-subscription.ts`), billed on
+  the platform's own Stripe account via a plain Checkout Session (`PLATFORM_STRIPE_PRICE_ID`)
+  — one plan for now, tiered plans deferred until there's a reason to differentiate them.
+  `account.updated` Connect webhook events and the platform-account's own
+  `customer.subscription.*` events are dispatched from the same `/api/webhooks/stripe`
+  endpoint (`webhook-handlers.ts`), distinguished by which table's `stripeCustomerId`/
+  `stripeConnectAccountId` actually matches — each handler no-ops if the event isn't theirs.
+- **Onboarding**: `/start` creates a new `Tenant`, makes the requesting `User` its `OWNER`,
+  starts a 14-day `PlatformSubscription` trial, and seeds a default CRM pipeline
+  (`lib/accounts/tenants.ts`'s `createTenantForUser` — the real runtime path; `seed.ts`
+  still inserts its own rows directly, per this repo's established seed-vs-runtime-path
+  split). `/accounts` lists every `Tenant` the signed-in user has a Membership on and lets
+  them switch; `/platform-admin` (isPlatformAdmin-gated) lists every tenant on the
+  platform with its plan/Connect status, for your own team.
+- **Migrating existing data**: the Phase 8 migration
+  (`packages/db/prisma/migrations/..._add_multi_tenancy`) backfills every pre-existing
+  CRM row onto one new `Tenant` (`slug: "intra-success-academy"`) rather than requiring a
+  clean database — `Contact`/`Company`/`Pipeline`/`Deal`/`Task`/`Note`/`Activity` all gained
+  a required `tenantId` column via nullable-add → backfill → `NOT NULL`, in that order,
+  specifically because this repo already had live seed/dev data in these tables (unlike
+  Phase 1's schema-complete-but-empty tables). The old ADMIN-role seed user became both
+  `isPlatformAdmin` and that tenant's `OWNER`; STAFF/CUSTOMER became memberships with the
+  matching role. `Contact.email` uniqueness moved from global to `[tenantId, email]` — the
+  same email can be a customer of two different tenants.
+- **What's still legacy (Phase 9's job)**: Funnels, Academy, Marketing, and Orders/Billing
+  are **not** tenant-scoped yet — `Funnel`, `Course`, `Product`, `Order`, `Subscription`,
+  `SocialAccount`, `Campaign` etc. have no `tenantId` column. Anywhere that code needs to
+  create a tenant-scoped row it touches (a funnel lead becoming a `Contact`, a manual
+  message logging an `Activity`), it either derives the tenant from an already-tenant-scoped
+  record it's attached to (a `Contact`/`Deal` it already has), or — when there's no such
+  record yet — falls back to `lib/accounts/legacy-tenant.ts`'s `getLegacyTenantId()`, which
+  resolves the same `"intra-success-academy"` tenant every fresh `seed.ts` run also creates.
+  This is a deliberate, documented interim state, not an oversight — don't "fix" it locally
+  by scattering `tenantId` params through Funnels/Academy one function at a time; do it as
+  Phase 9, scoping every module in that phase together the way Phase 8 did for CRM.
+- **Verified live**, not just unit-tested (`lib/accounts/tenants.ts`, `require-account.ts`,
+  `billing/connect.ts`, `billing/platform-subscription.ts` and the re-scoped `lib/crm/*.ts`
+  each have their own `.test.ts`): a full browser walkthrough against real Postgres —
+  logged in as the migrated admin user, confirmed `/accounts` shows the backfilled tenant
+  with the `OWNER` role, opened its CRM and created a real contact through the actual form
+  (exercising `createContactAction` → `requireAccountRole` → `createContact` with a real
+  `tenantId`), confirmed the deals board still renders, confirmed the billing settings page
+  shows the trialing platform subscription and a "Connect Stripe" prompt, confirmed
+  `/platform-admin` lists the tenant, then ran the full `/start` flow end-to-end to create a
+  second, completely separate tenant with its own empty CRM — and confirmed a `STAFF`
+  member of the first tenant can open it but gets a 404 (not a data leak) hitting an
+  unrelated tenant id, and that the legacy `/admin` surfaces correctly reject a non-platform-admin.
 
 ## Deploying to Railway
 

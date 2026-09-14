@@ -14,6 +14,7 @@ vi.mock("@platform/db", async () => {
   return {
     ...actual,
     prisma: {
+      contact: { findUniqueOrThrow: vi.fn() },
       activity: { create: vi.fn() },
     },
   };
@@ -45,6 +46,10 @@ describe("enqueueManualMessage", () => {
 });
 
 describe("processManualMessageJob", () => {
+  beforeEach(() => {
+    vi.mocked(prisma.contact.findUniqueOrThrow).mockResolvedValue({ id: "contact_1", tenantId: "tenant-1" } as never);
+  });
+
   it("sends the message (no sequenceStepId) and logs an EMAIL_SENT activity", async () => {
     await processManualMessageJob({ contactId: "contact_1", channel: "EMAIL", to: "a@example.com", subject: "Hi", body: "Hello" });
 
@@ -56,7 +61,7 @@ describe("processManualMessageJob", () => {
       body: "Hello",
     });
     expect(prisma.activity.create).toHaveBeenCalledWith({
-      data: { type: "EMAIL_SENT", contactId: "contact_1", metadata: { subject: "Hi" } },
+      data: { tenantId: "tenant-1", type: "EMAIL_SENT", contactId: "contact_1", metadata: { subject: "Hi" } },
     });
   });
 
@@ -64,7 +69,7 @@ describe("processManualMessageJob", () => {
     await processManualMessageJob({ contactId: "contact_1", channel: "SMS", to: "+15555550100", body: "Hello" });
 
     expect(prisma.activity.create).toHaveBeenCalledWith({
-      data: { type: "SMS_SENT", contactId: "contact_1", metadata: { subject: undefined } },
+      data: { tenantId: "tenant-1", type: "SMS_SENT", contactId: "contact_1", metadata: { subject: undefined } },
     });
   });
 

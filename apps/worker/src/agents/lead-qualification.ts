@@ -73,6 +73,7 @@ async function recordQualification(contactId: string, input: RecordQualification
 
   await prisma.activity.create({
     data: {
+      tenantId: contact.tenantId,
       type: ActivityType.SYSTEM,
       contactId,
       metadata: { action: "ai_lead_qualification", score: input.score, summary: input.summary, tags: input.tags },

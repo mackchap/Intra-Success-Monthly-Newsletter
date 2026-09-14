@@ -1,6 +1,7 @@
 import { prisma, ActivityType } from "@platform/db";
 
 export interface CreateTaskInput {
+  tenantId: string;
   title: string;
   description?: string;
   dueDate?: Date;
@@ -13,6 +14,7 @@ export interface CreateTaskInput {
 export async function createTask(input: CreateTaskInput) {
   const task = await prisma.task.create({
     data: {
+      tenantId: input.tenantId,
       title: input.title,
       description: input.description,
       dueDate: input.dueDate,
@@ -24,6 +26,7 @@ export async function createTask(input: CreateTaskInput) {
 
   await prisma.activity.create({
     data: {
+      tenantId: input.tenantId,
       type: ActivityType.TASK_CREATED,
       actorId: input.actorId,
       contactId: input.contactId,
@@ -43,6 +46,7 @@ export async function completeTask(taskId: string, actorId: string) {
 
   await prisma.activity.create({
     data: {
+      tenantId: task.tenantId,
       type: ActivityType.TASK_COMPLETED,
       actorId,
       contactId: task.contactId,

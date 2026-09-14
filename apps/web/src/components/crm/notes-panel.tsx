@@ -1,13 +1,15 @@
 import type { Note } from "@platform/db";
-import { addNoteAction } from "@/app/staff/shared-actions";
+import { addNoteAction } from "@/app/a/[tenantId]/staff/shared-actions";
 import { formatDate } from "@/lib/format";
 
 export function NotesPanel({
   notes,
+  tenantId,
   contactId,
   dealId,
 }: {
   notes: Note[];
+  tenantId: string;
   contactId?: string;
   dealId?: string;
 }) {
@@ -15,6 +17,7 @@ export function NotesPanel({
     <div className="flex flex-col gap-3">
       <h2 className="font-medium">Notes</h2>
       <form action={addNoteAction} className="flex flex-col gap-2">
+        <input type="hidden" name="tenantId" value={tenantId} />
         {contactId && <input type="hidden" name="contactId" value={contactId} />}
         {dealId && <input type="hidden" name="dealId" value={dealId} />}
         <textarea
