@@ -1,19 +1,33 @@
-import { prisma } from "@platform/db";
+import { prisma, type Tenant } from "@platform/db";
 
-// Every module Phase 8 hasn't tenant-scoped yet (Funnels, Sequences,
-// Academy, Marketing, Orders — see CLAUDE.md's Phase 8 section) still needs
-// *some* tenantId wherever it touches a model Phase 8 DID scope (Contact,
-// Deal, Activity). Until Phase 9 gives those modules real tenant awareness,
-// they attach to this one pre-existing tenant — the same one the Phase 8
-// migration backfilled all pre-existing CRM data onto, and the one
+// Phase 9 tenant-scoped Funnels/Academy/Marketing/Orders, so most callers
+// that used to fall back to this no longer need to. What's left: the root
+// `(marketing)` site (`/`, `/pricing`) is deliberately still "Intra Success
+// Academy's own marketing site" (its featured courses, its pricing), not a
+// generic cross-tenant page — see CLAUDE.md's Phase 9 section for why
+// redesigning it into a true platform-wide marketing site (selling the
+// platform itself, HighLevel-style) is a separate product decision, not a
+// side effect of tenant-scoping data. This is the same tenant the Phase 8
+// migration backfilled all pre-existing data onto, and the one
 // packages/db/prisma/seed.ts creates on a fresh database.
 const LEGACY_TENANT_SLUG = "intra-success-academy";
 
-let cachedLegacyTenantId: string | null = null;
+let cachedLegacyTenant: Pick<Tenant, "id" | "slug"> | null = null;
+
+async function getLegacyTenant(): Promise<Pick<Tenant, "id" | "slug">> {
+  if (cachedLegacyTenant) return cachedLegacyTenant;
+  const tenant = await prisma.tenant.findUniqueOrThrow({
+    where: { slug: LEGACY_TENANT_SLUG },
+    select: { id: true, slug: true },
+  });
+  cachedLegacyTenant = tenant;
+  return tenant;
+}
 
 export async function getLegacyTenantId(): Promise<string> {
-  if (cachedLegacyTenantId) return cachedLegacyTenantId;
-  const tenant = await prisma.tenant.findUniqueOrThrow({ where: { slug: LEGACY_TENANT_SLUG } });
-  cachedLegacyTenantId = tenant.id;
-  return tenant.id;
+  return (await getLegacyTenant()).id;
+}
+
+export async function getLegacyTenantSlug(): Promise<string> {
+  return (await getLegacyTenant()).slug;
 }

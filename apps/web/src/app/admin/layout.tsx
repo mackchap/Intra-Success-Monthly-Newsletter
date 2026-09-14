@@ -3,14 +3,12 @@ import Link from "next/link";
 // Admin pages read live, admin-only data — never statically prerender.
 export const dynamic = "force-dynamic";
 
+// Phase 9 is moving every module below off this bare /admin path onto
+// /a/[tenantId]/admin/* (tenant-scoped) one at a time — this nav shrinks as
+// each one moves. See CLAUDE.md's Phase 9 section.
 const NAV_ITEMS = [
   { href: "/admin", label: "Dashboard" },
-  { href: "/admin/courses", label: "Courses" },
-  { href: "/admin/funnels", label: "Funnels" },
-  { href: "/admin/sequences", label: "Sequences" },
-  { href: "/admin/marketing", label: "Marketing" },
-  { href: "/admin/products", label: "Products" },
-  { href: "/accounts", label: "Accounts (CRM) ↗" },
+  { href: "/accounts", label: "Accounts (CRM + tenant admin) ↗" },
   { href: "/platform-admin", label: "Platform admin" },
 ];
 

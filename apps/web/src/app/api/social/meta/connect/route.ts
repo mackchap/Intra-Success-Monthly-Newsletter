@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { randomBytes } from "crypto";
-import { requireStaffSession } from "@/lib/require-staff";
+import { requireAccountRole } from "@/lib/accounts/require-account";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +16,12 @@ const META_OAUTH_SCOPES = [
 ];
 
 export async function GET(request: Request) {
-  await requireStaffSession();
+  const url = new URL(request.url);
+  const tenantId = url.searchParams.get("tenantId");
+  if (!tenantId) {
+    return NextResponse.json({ error: "tenantId is required." }, { status: 400 });
+  }
+  await requireAccountRole(tenantId, "ADMIN");
 
   const appId = process.env.META_APP_ID;
   if (!appId) {
@@ -34,8 +39,18 @@ export async function GET(request: Request) {
 
   // Double-submit cookie: the callback checks this against Meta's returned
   // `state` to rule out a forged redirect (standard OAuth CSRF protection).
+  // The tenant is carried the same way — Meta's OAuth dialog has no field
+  // for arbitrary app state beyond `state` itself, and the callback needs to
+  // know which tenant's admin re-verify-and-redirect this connection is for.
   const response = NextResponse.redirect(authorizeUrl);
   response.cookies.set("meta_oauth_state", state, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "lax",
+    maxAge: 600,
+    path: "/",
+  });
+  response.cookies.set("meta_oauth_tenant", tenantId, {
     httpOnly: true,
     secure: true,
     sameSite: "lax",

@@ -1,13 +1,15 @@
 import Link from "next/link";
+import { getLegacyTenantSlug } from "@/lib/accounts/legacy-tenant";
 
-const NAV_ITEMS = [
-  { href: "/", label: "Home" },
-  { href: "/courses", label: "Courses" },
-  { href: "/pricing", label: "Pricing" },
-  { href: "/about", label: "About" },
-];
+export default async function MarketingLayout({ children }: { children: React.ReactNode }) {
+  const tenantSlug = await getLegacyTenantSlug();
+  const NAV_ITEMS = [
+    { href: "/", label: "Home" },
+    { href: `/t/${tenantSlug}/courses`, label: "Courses" },
+    { href: "/pricing", label: "Pricing" },
+    { href: "/about", label: "About" },
+  ];
 
-export default function MarketingLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col">
       <header className="border-b border-slate-200">

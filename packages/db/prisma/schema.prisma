@@ -27,16 +27,15 @@ datasource db {
 // =============================================================================
 
 model User {
-  id               String    @id @default(cuid())
-  name             String?
-  email            String?   @unique
-  emailVerified    DateTime?
-  image            String?
-  password         String? // bcrypt hash; null for OAuth-only users
-  isPlatformAdmin  Boolean   @default(false)
-  stripeCustomerId String?   @unique
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  id              String    @id @default(cuid())
+  name            String?
+  email           String?   @unique
+  emailVerified   DateTime?
+  image           String?
+  password        String? // bcrypt hash; null for OAuth-only users
+  isPlatformAdmin Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   accounts    Account[]
   sessions    Session[]
@@ -58,8 +57,9 @@ model User {
   certificates   Certificate[]
 
   // Orders / billing
-  orders        Order[]
-  subscriptions Subscription[]
+  orders          Order[]
+  subscriptions   Subscription[]
+  tenantCustomers TenantCustomer[]
 
   // Marketing
   connectedSocialAccounts SocialAccount[]
@@ -133,6 +133,17 @@ model Tenant {
   tasks      Task[]
   notes      Note[]
   activities Activity[]
+
+  // Phase 9
+  funnels         Funnel[]
+  sequences       Sequence[]
+  courses         Course[]
+  products        Product[]
+  orders          Order[]
+  subscriptions   Subscription[]
+  tenantCustomers TenantCustomer[]
+  socialAccounts  SocialAccount[]
+  campaigns       Campaign[]
 
   @@index([slug])
 }
@@ -480,11 +491,14 @@ enum FunnelStepType {
 model Funnel {
   id          String       @id @default(cuid())
   name        String
-  slug        String       @unique
+  slug        String
   description String?
   status      FunnelStatus @default(DRAFT)
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   steps       FunnelStep[]
   deals       Deal[]
@@ -492,6 +506,11 @@ model Funnel {
   submissions FunnelSubmission[]
   sequences   Sequence[]
   orders      Order[]
+
+  // Slugs are only unique per tenant now (Phase 9) — public funnel URLs are
+  // tenant-scoped (`/t/[tenantSlug]/f/[funnelSlug]/...`), so two tenants can
+  // each have their own "free-guide" funnel.
+  @@unique([tenantId, slug])
 }
 
 // A step IS a page: its `content` holds the builder's page JSON (blocks/layout).
@@ -572,12 +591,16 @@ model Sequence {
   active    Boolean         @default(true)
   createdAt DateTime        @default(now())
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   funnelId String?
   funnel   Funnel? @relation(fields: [funnelId], references: [id])
 
   steps       SequenceStep[]
   enrollments SequenceEnrollment[]
 
+  @@index([tenantId])
   @@index([funnelId])
 }
 
@@ -666,7 +689,7 @@ enum CoursePriceType {
 model Course {
   id              String          @id @default(cuid())
   title           String
-  slug            String          @unique
+  slug            String
   description     String?         @db.Text
   priceType       CoursePriceType @default(PAID)
   priceCents      Int             @default(0)
@@ -675,6 +698,9 @@ model Course {
   stripePriceId   String?
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   modules      Module[]
   enrollments  Enrollment[]
@@ -685,7 +711,10 @@ model Course {
   prerequisites Course[] @relation("CoursePrerequisites")
   requiredFor   Course[] @relation("CoursePrerequisites")
 
-  @@index([published])
+  // Slugs are only unique per tenant now (Phase 9) — public course URLs are
+  // tenant-scoped (`/t/[tenantSlug]/courses/[slug]`).
+  @@unique([tenantId, slug])
+  @@index([tenantId, published])
 }
 
 model Module {
@@ -847,15 +876,22 @@ model Product {
   // Dashboard or API) and synced in here via product.*/price.* webhooks —
   // see apps/web/src/lib/billing/webhook-handlers.ts. `type` and `courseId`
   // come from the Stripe Product's metadata (metadata.type, metadata.courseId).
+  // Since Phase 9, these events only ever arrive on a tenant's own connected
+  // Stripe account (`event.account`), which is how tenantId is resolved.
   stripeProductId String?     @unique
   stripePriceId   String?     @unique
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   courseId String?
   course   Course? @relation(fields: [courseId], references: [id])
 
   orders Order[]
+
+  @@index([tenantId])
 }
 
 enum OrderStatus {
@@ -877,6 +913,9 @@ model Order {
   createdAt               DateTime    @default(now())
   updatedAt               DateTime    @updatedAt
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   userId String?
   user   User?   @relation(fields: [userId], references: [id])
 
@@ -895,6 +934,7 @@ model Order {
   funnelId String?
   funnel   Funnel? @relation(fields: [funnelId], references: [id])
 
+  @@index([tenantId])
   @@index([userId])
   @@index([status])
 }
@@ -907,6 +947,8 @@ enum SubscriptionStatus {
   INCOMPLETE
 }
 
+// A User's subscription to one of a TENANT's membership products — distinct
+// from PlatformSubscription (what the tenant pays the platform itself).
 model Subscription {
   id                   String             @id @default(cuid())
   stripeSubscriptionId String             @unique
@@ -918,10 +960,34 @@ model Subscription {
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   userId String
   user   User   @relation(fields: [userId], references: [id])
 
+  @@index([tenantId])
   @@index([userId])
+}
+
+// A per-(Tenant,User) Stripe Customer object. Required because Stripe Connect
+// customers live on the connected account, not the platform's — the same
+// human buying from two different tenants is two different Stripe Customer
+// objects, on two different Stripe accounts. Replaces the old single global
+// User.stripeCustomerId (Phase 3), which only worked when there was one
+// Stripe account for everyone.
+model TenantCustomer {
+  id               String   @id @default(cuid())
+  stripeCustomerId String   @unique
+  createdAt        DateTime @default(now())
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
 }
 
 // Idempotency log for inbound Stripe webhook events.
@@ -959,12 +1025,18 @@ model SocialAccount {
   connectedAt          DateTime       @default(now())
   disconnectedAt       DateTime?
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   connectedByUserId String?
   connectedByUser   User?   @relation(fields: [connectedByUserId], references: [id])
 
   posts SocialPost[]
 
+  // A real Facebook Page/IG account can only ever be connected to one
+  // tenant at a time — this constraint is what enforces that, incidentally.
   @@unique([platform, externalId])
+  @@index([tenantId])
 }
 
 enum CampaignStatus {
@@ -984,10 +1056,15 @@ model Campaign {
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   createdByUserId String?
   createdByUser   User?   @relation(fields: [createdByUserId], references: [id])
 
   posts SocialPost[]
+
+  @@index([tenantId])
 }
 
 enum SocialPostStatus {

@@ -1,6 +1,7 @@
 import { prisma, CoursePriceType, LessonType, VideoProvider } from "@platform/db";
 
 export interface CreateCourseInput {
+  tenantId: string;
   title: string;
   slug: string;
   description?: string;

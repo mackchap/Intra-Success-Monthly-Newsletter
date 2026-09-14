@@ -31,16 +31,18 @@ names "Marlow"/"Kelvo") combining:
 | 5 | Website, client portal, funnel builder | ✅ done |
 | 6 | Automation sequences, AI agents, analytics dashboard | ✅ done |
 | 7 | Marketing agents: Facebook/Instagram drafting + posting, strategy insights | ✅ done |
-| 8 | Multi-tenant foundation: Tenant/Membership, Stripe Connect, platform billing, CRM tenant-scoped | ✅ done (this commit) |
-| 9 | Tenant-scope Funnels/Academy/Marketing/Orders; move their revenue onto Stripe Connect | ⬜ not started |
+| 8 | Multi-tenant foundation: Tenant/Membership, Stripe Connect, platform billing, CRM tenant-scoped | ✅ done |
+| 9 | Tenant-scope Funnels/Academy/Marketing/Orders; move their revenue onto Stripe Connect | ✅ done (this commit) |
 | 10 | Directory module (multi-tenant local-business directory builder, AI concierge agent) | ⬜ not started |
 
 Each phase is built and reviewed before the next starts. Do not jump ahead —
 if you're an AI agent continuing this work, check this table and the git log
-before assuming what exists. **As of Phase 8, only the CRM module is
-tenant-scoped** — Funnels, Academy, Marketing, and Orders/Billing still
-operate on one implicit legacy tenant until Phase 9. See the Phase 8 section
-below before touching any of those modules.
+before assuming what exists. **As of Phase 9, every business module (CRM,
+Funnels, Academy, Marketing, Orders/Billing) is tenant-scoped** and every
+tenant's own revenue settles on that tenant's own Stripe Connect account —
+only the platform's own subscription billing and the root marketing site
+still touch a single implicit tenant. See the Phase 9 section below before
+touching Funnels/Academy/Marketing/Orders routing or billing.
 
 ## Stack
 
@@ -239,8 +241,15 @@ before there's real business logic to test.
   and must never be statically prerendered at build time (which would also
   just fail: there's no `DATABASE_URL` in the build environment).
 
-## Payments (Phase 3)
+## Payments (Phase 3, moved onto per-tenant Stripe Connect accounts in Phase 9)
 
+- As of Phase 9, every call below (`checkout.sessions.create`,
+  `customers.create`, `billingPortal.sessions.create`) runs against the
+  *product's own tenant's* connected Stripe account, not the platform's —
+  see the Phase 9 section below for `TenantCustomer` (which replaced the
+  `User.stripeCustomerId` this section originally described) and the
+  Connect-aware webhook dispatch. The product-sync and idempotency mechanics
+  described below are otherwise unchanged.
 - **Stripe Products/Prices are managed in the Stripe Dashboard (or API), not
   in our admin UI.** They sync into our `Product` table via
   `product.created`/`product.updated`/`price.created`/`price.updated`
@@ -257,9 +266,12 @@ before there's real business logic to test.
   `Order` row *before* redirecting to Stripe, storing its id in the Checkout
   Session's metadata and its `stripeCheckoutSessionId` on the Order — so the
   webhook handler updates a known row by that id instead of reconstructing
-  order details from the Stripe event. One Stripe Customer per `User`
-  (`User.stripeCustomerId`, created lazily on first purchase and reused for
-  every subsequent purchase, subscription, and the billing portal).
+  order details from the Stripe event. One Stripe Customer per `(Tenant,
+  User)` pair since Phase 9 (`TenantCustomer`, created lazily on first
+  purchase from that tenant and reused for every subsequent purchase,
+  subscription, and the billing portal *with that tenant* — see the Phase 9
+  section below for why one global `User.stripeCustomerId` stopped being
+  correct).
 - **Webhooks** (`/api/webhooks/stripe`, `apps/web/src/lib/billing/webhook-handlers.ts`):
   - `checkout.session.completed` → marks the `Order` `PAID`; if it has a
     `courseId`, upserts an `ACTIVE`/`STRIPE_PURCHASE` `Enrollment`; if it has
@@ -303,8 +315,14 @@ before there's real business logic to test.
   real test-mode keys are set, exercise checkout/portal live with
   `stripe listen` per the section below.
 
-## Academy (Phase 4)
+## Academy (Phase 4, tenant-scoped since Phase 9)
 
+- Course authoring moved to `/a/[tenantId]/admin/courses/*` and the public
+  catalog to `/t/[tenantSlug]/courses/*` in Phase 9 — see that section below
+  before touching routing or access here. The access-control logic described
+  in this section (`canAccessLesson`, enrollment sources, drip/prerequisite
+  checks) is otherwise unchanged; it already operated per-`Course`, and every
+  `Course` now simply carries a `tenantId`.
 - **`Enrollment.status = ACTIVE` is the single source of truth for course
   access**, regardless of how the student got in. Every access path funnels
   through exactly one of four functions in `apps/web/src/lib/academy/enrollment.ts`,
@@ -374,8 +392,13 @@ before there's real business logic to test.
   webhook event (same technique as Phase 3) actually revoking that
   membership course's access end to end.
 
-## Website, portal & funnels (Phase 5)
+## Website, portal & funnels (Phase 5, funnels tenant-scoped since Phase 9)
 
+- Funnel authoring moved to `/a/[tenantId]/admin/funnels/*` and the public
+  funnel renderer to `/t/[tenantSlug]/f/[funnelSlug]/[stepSlug]` in Phase 9 —
+  see that section below before touching routing here. Everything below
+  describes the block editor and lead-capture logic, which is otherwise
+  unchanged.
 - **Funnel builder is a structured block editor, not drag-and-drop.**
   `FunnelStep.content` stores an ordered array of typed blocks (`heading`,
   `text`, `image`, `button`, `form`, `buy` — `apps/web/src/lib/funnels/blocks.ts`).
@@ -438,8 +461,12 @@ before there's real business logic to test.
   price" `ValidationError` Phase 3/4 already established as the expected
   behavior without real Stripe keys in this environment.
 
-## Automation & AI agents (Phase 6)
+## Automation & AI agents (Phase 6, Sequences tenant-scoped since Phase 9)
 
+- Sequence authoring moved to `/a/[tenantId]/admin/sequences/*` in Phase 9 —
+  see that section below. The queue/worker processing logic described below
+  is unchanged; a `Sequence` targets a specific `Funnel`, which is already
+  tenant-scoped, so no cross-tenant enrollment path exists.
 - **Sequences (email/SMS automation)**: `Sequence`/`SequenceStep`/`SequenceEnrollment` (already in
   the Phase 1 schema) are built out fully in Phase 6. `EmailProvider`/`SmsProvider`
   (`apps/worker/src/messaging/types.ts`) are small provider-agnostic interfaces; `ResendEmailProvider`/
@@ -548,8 +575,12 @@ before there's real business logic to test.
     with only the final completion blocked by the missing key. Same accepted pattern as Stripe/
     Resend/Twilio in every prior phase.
 
-## Marketing agents: Facebook & Instagram (Phase 7)
+## Marketing agents: Facebook & Instagram (Phase 7, tenant-scoped since Phase 9)
 
+- Campaign/post review moved to `/a/[tenantId]/admin/marketing/*` and the
+  Meta OAuth connect flow now carries a `tenantId` through the whole
+  dance — see the Phase 9 section below before touching routing, the OAuth
+  flow, or either agent's data access here.
 - **Scope, deliberately narrow**: only Meta (Facebook Pages + linked Instagram Business
   accounts) is wired up. TikTok, X, YouTube, and Rumble were all evaluated and explicitly
   deferred — TikTok's Content Posting API requires a 2–6 week manual audit before posts can go
@@ -696,17 +727,12 @@ before there's real business logic to test.
   `isPlatformAdmin` and that tenant's `OWNER`; STAFF/CUSTOMER became memberships with the
   matching role. `Contact.email` uniqueness moved from global to `[tenantId, email]` — the
   same email can be a customer of two different tenants.
-- **What's still legacy (Phase 9's job)**: Funnels, Academy, Marketing, and Orders/Billing
-  are **not** tenant-scoped yet — `Funnel`, `Course`, `Product`, `Order`, `Subscription`,
-  `SocialAccount`, `Campaign` etc. have no `tenantId` column. Anywhere that code needs to
-  create a tenant-scoped row it touches (a funnel lead becoming a `Contact`, a manual
-  message logging an `Activity`), it either derives the tenant from an already-tenant-scoped
-  record it's attached to (a `Contact`/`Deal` it already has), or — when there's no such
-  record yet — falls back to `lib/accounts/legacy-tenant.ts`'s `getLegacyTenantId()`, which
-  resolves the same `"intra-success-academy"` tenant every fresh `seed.ts` run also creates.
-  This is a deliberate, documented interim state, not an oversight — don't "fix" it locally
-  by scattering `tenantId` params through Funnels/Academy one function at a time; do it as
-  Phase 9, scoping every module in that phase together the way Phase 8 did for CRM.
+- **What was still legacy at the end of Phase 8**: Funnels, Academy, Marketing, and
+  Orders/Billing were not yet tenant-scoped — see the Phase 9 section below for how that
+  was closed out. `lib/accounts/legacy-tenant.ts`'s `getLegacyTenantId()`/`getLegacyTenantSlug()`
+  still exist and are still the right tool for a genuinely tenant-agnostic surface (the root
+  `(marketing)` site, which deliberately represents "Intra Success Academy" specifically) —
+  they're just no longer a stand-in for missing `tenantId` columns on business data.
 - **Verified live**, not just unit-tested (`lib/accounts/tenants.ts`, `require-account.ts`,
   `billing/connect.ts`, `billing/platform-subscription.ts` and the re-scoped `lib/crm/*.ts`
   each have their own `.test.ts`): a full browser walkthrough against real Postgres —
@@ -719,6 +745,111 @@ before there's real business logic to test.
   second, completely separate tenant with its own empty CRM — and confirmed a `STAFF`
   member of the first tenant can open it but gets a 404 (not a data leak) hitting an
   unrelated tenant id, and that the legacy `/admin` surfaces correctly reject a non-platform-admin.
+
+## Tenant-scoped Funnels, Academy, Marketing, Orders & Stripe Connect revenue (Phase 9)
+
+- **Why this exists**: Phase 8 proved the Tenant/Membership/Stripe Connect foundation on the
+  CRM module alone, deliberately leaving Funnels, Academy, Marketing, and Orders/Billing on
+  one implicit legacy tenant. Phase 9 finishes that migration — every business module is now
+  tenant-scoped, and every tenant's own revenue (course sales, funnel offers, memberships)
+  settles on that tenant's own Stripe Connect account rather than the platform's. Only the
+  platform's own subscription billing (`PlatformSubscription`, unchanged from Phase 8) and the
+  root `(marketing)` site (which deliberately still represents "Intra Success Academy"
+  specifically, via `getLegacyTenantId()`/`getLegacyTenantSlug()`) still touch one fixed tenant.
+- **Schema**: `Funnel` (unique → `[tenantId, slug]`), `Course` (unique → `[tenantId, slug]`),
+  `Sequence`, `Product`, `Order`, `Subscription`, `SocialAccount`, and `Campaign` all gained a
+  required `tenantId`, backfilled onto the same `"intra-success-academy"` tenant via the same
+  nullable-add → backfill → `NOT NULL` migration pattern Phase 8 used for CRM. `SocialPost` and
+  `InsightSnapshot` did **not** gain their own `tenantId` — they're reached via `Campaign`/
+  `SocialAccount`, which are already tenant-scoped, matching this repo's existing polymorphism
+  convention of deriving scope from an already-scoped parent rather than duplicating the column.
+- **`TenantCustomer` replaces the old global `User.stripeCustomerId`** (removed entirely — zero
+  existing rows had one set, so no backfill was needed): a Stripe Customer object only exists
+  within one specific Stripe account, and Stripe Connect gives every tenant its own connected
+  account, so the same person buying from two different tenants needs two different Stripe
+  Customer ids. `getOrCreateStripeCustomerId(tenantId, userId)` (`lib/billing/customer.ts`)
+  looks up/creates the `TenantCustomer` row and the Stripe Customer on that tenant's connected
+  account (`{stripeAccount: tenant.stripeConnectAccountId}` passed as Stripe SDK call options,
+  the standard way to act on behalf of a connected account); it throws a `ValidationError` if
+  the tenant hasn't connected Stripe yet, since there's nothing to create a customer on.
+- **Checkout and the billing portal both run entirely on the product's/subscription's own
+  tenant's connected account**: `createCheckoutSession` (`lib/billing/checkout.ts`) derives the
+  tenant from `product.tenantId`, refuses with a `ValidationError` if
+  `!tenant.stripeConnectAccountId || !tenant.chargesEnabled` (verified live — see below), and
+  passes `{stripeAccount: tenant.stripeConnectAccountId}` on the `checkout.sessions.create`
+  call; `createBillingPortalSession(tenantId, userId)` (`lib/billing/portal.ts`) does the same
+  for `billingPortal.sessions.create`. `/portal` groups a customer's Orders/Subscriptions by
+  tenant (a portal user can have bought from more than one) and renders one "Manage billing"
+  form per tenant rather than a single global button, since each opens a portal session on a
+  different connected account.
+- **Webhook dispatch resolves `tenantId` from `event.account`** (`processStripeWebhookEvent`,
+  `lib/billing/webhook-handlers.ts`): a Connect event (a tenant's own product/price/subscription
+  activity) always carries `event.account`, looked up against `Tenant.stripeConnectAccountId` to
+  get a `tenantId`; an event with no `account` is the platform's own Stripe account (platform
+  subscriptions, `account.updated` Connect-status notifications) and dispatches to the
+  Phase 8 platform-subscription handlers instead. `handleProductUpsert`/`handlePriceUpsert`/
+  `handleSubscriptionUpsert`/`handleSubscriptionDeleted` all now take `tenantId` as an explicit
+  second argument rather than inferring it — `handleSubscriptionUpsert` looks up the
+  `TenantCustomer` by `(tenantId, stripeCustomerId)` instead of the old global `User` lookup, and
+  `handleSubscriptionDeleted`'s call to `revokeMembershipEnrollments` is now tenant-scoped so
+  canceling a subscription with one tenant can never revoke a membership course granted by a
+  different one (a real cross-tenant bug caught and fixed during this phase — see below).
+- **Route restructuring** follows the pattern Phase 8 established for CRM: authenticated
+  tenant-admin authoring surfaces move under `/a/[tenantId]/admin/*` (`courses`, `funnels`,
+  `sequences`, `marketing`, `products`, gated by a shared `layout.tsx` requiring `ADMIN`+ —
+  stricter than CRM's `STAFF`+, since these are authoring/settings actions); public,
+  slug-addressed storefront pages move under `/t/[tenantSlug]/*` (`courses`,
+  `f/[funnelSlug]/[stepSlug]`) since a slug is only unique per tenant. ID-addressed public
+  routes (`/products/[id]`, `/portal/courses/[id]`) stay unprefixed — an id is already globally
+  unique, so no tenant segment is needed to resolve one. Every tenant-admin Server Action
+  re-derives `tenantId` from a hidden form field and re-verifies both the caller's role
+  (`requireAccountRole(tenantId, "ADMIN")`) and that the target row actually belongs to that
+  tenant (a `requireXInTenant` helper per module — `requireFunnelInTenant`,
+  `requireCourseInTenant`, `requireCampaignInTenant`, `requireSequenceInTenant`) before
+  mutating it, rather than trusting the URL segment alone.
+- **A funnel's stored button hrefs stay unprefixed** (e.g. `/f/free-guide/opt-in`, exactly as
+  Phase 5 wrote them) — no data migration was needed. `resolveHref(href, tenantSlug)`
+  (`apps/web/src/app/t/[tenantSlug]/f/[funnelSlug]/[stepSlug]/page.tsx`) rewrites a stored
+  `/f/...` href to `/t/${tenantSlug}/f/...` at render time instead.
+- **The Meta OAuth connect flow carries a `tenantId` through the whole dance**:
+  `/api/social/meta/connect?tenantId=...` checks `requireAccountRole(tenantId, "ADMIN")` before
+  redirecting to Meta, then stores the tenant alongside the CSRF `state` in a second
+  `meta_oauth_tenant` cookie (Meta's OAuth dialog has no field for arbitrary app state beyond
+  `state` itself); `/api/social/meta/callback` reads both cookies, re-verifies the same role
+  check (the admin's membership could have changed mid-OAuth-dialog), then calls
+  `connectMetaAccounts({tenantId, ...})`. `connectMetaAccounts` (`lib/social/connect.ts`) now
+  guards against a second cross-tenant bug: since a real Facebook Page/Instagram account can
+  only ever belong to one tenant (`SocialAccount`'s `@@unique([platform, externalId])`), a
+  second tenant connecting the *same* real Page would otherwise have its OAuth upsert silently
+  reassign that row's `tenantId` out from under the first tenant. It now checks the existing row
+  first and throws a `ValidationError` instead of reassigning.
+- **Two real cross-tenant bugs were caught and fixed during this phase** (self-caught, not
+  user-reported, same pattern as Phase 8's signup/enrollment fixes): `enrollViaMembership` and
+  `revokeMembershipEnrollments` (`lib/academy/enrollment.ts`) checked for an active
+  `Subscription` with no tenant scoping — a Tenant A subscription could have granted or revoked
+  access to a Tenant B membership course. Both are now scoped via `course.tenantId`. The Meta
+  reconnect issue above is the same class of bug in a different module.
+- **The insights agent (`getMarketingRecommendations`, `lib/agents/marketing-insights.ts`) now
+  takes a `tenantId`** and scopes its `get_own_performance` tool's `SocialPost` query via
+  `socialAccount: { tenantId }` — without this it would have summarized every tenant's posts
+  together. `draftSocialPost` and `getFunnelOptimizationAdvice` didn't need the same treatment:
+  they're already keyed by an already-tenant-scoped `campaignId`/`funnelId`/`socialAccountId`,
+  and the calling Server Action verifies that id belongs to the tenant before invoking them —
+  the same pattern Phase 9 used throughout rather than threading `tenantId` through every agent.
+- **Verified live**, not just unit-tested (every rewritten `lib/` file above has its own
+  `.test.ts`, mocked `@platform/db` throughout): a full browser walkthrough against real
+  Postgres — logged in as the migrated admin, created a real campaign and a real sequence
+  through the actual `/a/[tenantId]/admin/*` forms (confirming the redirect lands on the new
+  detail route and the row persists with the right `tenantId`), loaded the re-routed public
+  funnel at `/t/intra-success-academy/f/free-guide/start`, confirmed a `STAFF` (non-`ADMIN`)
+  member gets a 404 hitting `/a/[tenantId]/admin/marketing`, ran the full `/start` flow to spin
+  up a second, unrelated tenant and confirmed its Marketing/Sequences pages show zero data (no
+  leak from the first tenant), and — inserting one test `Product` row with a synced
+  `stripePriceId` but no Connect account on its tenant — clicked "Buy now" as a real signed-in
+  customer and confirmed the exact expected refusal end to end: `Error [ValidationError]: Intra
+  Success Academy hasn't finished connecting Stripe yet — this product can't be purchased until
+  they do.`, thrown from `createCheckoutSession` and surfaced by Next.js's error boundary,
+  proving the Stripe Connect gate is real and wired all the way from the UI to the DB.
 
 ## Deploying to Railway
 

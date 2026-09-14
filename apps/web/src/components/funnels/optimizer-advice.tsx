@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { getFunnelOptimizationAdviceAction } from "@/app/admin/funnels/[id]/analytics/actions";
+import { getFunnelOptimizationAdviceAction } from "@/app/a/[tenantId]/admin/funnels/[id]/analytics/actions";
 
-export function OptimizerAdvice({ funnelId }: { funnelId: string }) {
+export function OptimizerAdvice({ tenantId, funnelId }: { tenantId: string; funnelId: string }) {
   const [advice, setAdvice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -12,7 +12,7 @@ export function OptimizerAdvice({ funnelId }: { funnelId: string }) {
     setLoading(true);
     setError(null);
     try {
-      const result = await getFunnelOptimizationAdviceAction(funnelId);
+      const result = await getFunnelOptimizationAdviceAction(tenantId, funnelId);
       setAdvice(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to get suggestions.");

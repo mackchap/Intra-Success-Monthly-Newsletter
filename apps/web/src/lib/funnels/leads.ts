@@ -2,7 +2,6 @@ import { prisma, ActivityType } from "@platform/db";
 import { ValidationError } from "@/lib/crm/errors";
 import { enqueueFunnelSubmissionTrigger } from "@/lib/queues/sequence-triggers";
 import { enqueueLeadQualification } from "@/lib/queues/lead-qualification";
-import { getLegacyTenantId } from "@/lib/accounts/legacy-tenant";
 
 export interface CaptureLeadInput {
   funnelId: string;
@@ -22,9 +21,13 @@ export async function captureLead(input: CaptureLeadInput) {
     throw new ValidationError("A lead capture form must collect an email address.");
   }
 
-  // Funnels aren't tenant-scoped yet (Phase 9) — every funnel lead lands on
-  // the one legacy tenant until then. See lib/accounts/legacy-tenant.ts.
-  const tenantId = await getLegacyTenantId();
+  // Funnels are tenant-scoped (Phase 9) — a lead always lands in the same
+  // tenant as the funnel it came from, not some fallback.
+  const funnel = await prisma.funnel.findUniqueOrThrow({
+    where: { id: input.funnelId },
+    select: { tenantId: true, name: true },
+  });
+  const tenantId = funnel.tenantId;
 
   const existingContact = await prisma.contact.findUnique({ where: { tenantId_email: { tenantId, email } } });
   const contact = await prisma.contact.upsert({
@@ -59,8 +62,6 @@ export async function captureLead(input: CaptureLeadInput) {
       where: { tenantId, isDefault: true },
       include: { stages: { orderBy: { order: "asc" }, take: 1 } },
     });
-    const funnel = await prisma.funnel.findUniqueOrThrow({ where: { id: input.funnelId } });
-
     deal = await prisma.deal.create({
       data: {
         tenantId,

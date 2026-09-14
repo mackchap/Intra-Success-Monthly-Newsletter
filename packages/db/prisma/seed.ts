@@ -230,6 +230,7 @@ async function main() {
     update: {},
     create: {
       id: "seed-course-intra",
+      tenantId: tenant.id,
       title: "Intrapreneurship Fundamentals",
       slug: "intrapreneurship-fundamentals",
       description: "A sample course seeded for local Stripe checkout testing.",
@@ -244,6 +245,7 @@ async function main() {
     update: {},
     create: {
       id: "seed-product-intra-course",
+      tenantId: tenant.id,
       name: course.title,
       type: "COURSE",
       priceCents: course.priceCents,
@@ -337,6 +339,7 @@ async function main() {
     update: {},
     create: {
       id: "seed-course-free",
+      tenantId: tenant.id,
       title: "Community Basics",
       slug: "community-basics",
       description: "A free sample course anyone can self-enroll in.",
@@ -371,6 +374,7 @@ async function main() {
     update: {},
     create: {
       id: "seed-course-membership",
+      tenantId: tenant.id,
       title: "Founding Member Vault",
       slug: "founding-member-vault",
       description: "Included with an active membership subscription.",
@@ -401,6 +405,7 @@ async function main() {
     update: {},
     create: {
       id: "seed-product-membership",
+      tenantId: tenant.id,
       name: "Founding Member",
       type: "MEMBERSHIP",
       priceCents: 2900,
@@ -418,6 +423,7 @@ async function main() {
     update: {},
     create: {
       id: "seed-funnel-guide",
+      tenantId: tenant.id,
       name: "Free Guide Funnel",
       slug: "free-guide",
       description: "Sample funnel seeded for local end-to-end testing.",
@@ -498,7 +504,7 @@ async function main() {
     },
   });
 
-  console.log(`Sample funnel ready: ${funnel.name} (/f/${funnel.slug}/start)`);
+  console.log(`Sample funnel ready: ${funnel.name} (/t/${tenant.slug}/f/${funnel.slug}/start)`);
 }
 
 main()

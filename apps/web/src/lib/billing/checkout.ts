@@ -14,21 +14,31 @@ export interface CreateCheckoutSessionInput {
 // Creates a pending Order up front (before redirecting to Stripe) so the
 // webhook handler has a stable row to update by stripeCheckoutSessionId
 // rather than trying to reconstruct order details from the Stripe event.
+// Everything here runs on the PRODUCT'S OWN TENANT's connected Stripe
+// account (Phase 9) — this money is the tenant's, not the platform's.
 export async function createCheckoutSession(input: CreateCheckoutSessionInput) {
   const product = await prisma.product.findUniqueOrThrow({ where: { id: input.productId } });
 
   if (!product.stripePriceId) {
     throw new ValidationError(
-      `Product "${product.name}" has no Stripe price yet — it hasn't synced from Stripe (create/publish it in the Stripe Dashboard first).`,
+      `Product "${product.name}" has no Stripe price yet — it hasn't synced from Stripe (create/publish it on the connected Stripe account first).`,
+    );
+  }
+
+  const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: product.tenantId } });
+  if (!tenant.stripeConnectAccountId || !tenant.chargesEnabled) {
+    throw new ValidationError(
+      `${tenant.name} hasn't finished connecting Stripe yet — this product can't be purchased until they do.`,
     );
   }
 
   const user = await prisma.user.findUniqueOrThrow({ where: { id: input.userId } });
-  const customerId = await getOrCreateStripeCustomerId(input.userId);
+  const customerId = await getOrCreateStripeCustomerId(tenant.id, input.userId);
   const deal = input.dealId ? await prisma.deal.findUnique({ where: { id: input.dealId } }) : null;
 
   const order = await prisma.order.create({
     data: {
+      tenantId: tenant.id,
       email: user.email ?? "",
       amountCents: product.priceCents,
       currency: product.currency,
@@ -44,15 +54,18 @@ export async function createCheckoutSession(input: CreateCheckoutSessionInput) {
   const appUrl = process.env.APP_URL ?? "http://localhost:3000";
   const mode = product.type === ProductType.MEMBERSHIP ? "subscription" : "payment";
 
-  const session = await stripe.checkout.sessions.create({
-    mode,
-    customer: customerId,
-    client_reference_id: user.id,
-    line_items: [{ price: product.stripePriceId, quantity: 1 }],
-    success_url: `${appUrl}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${appUrl}/checkout/cancel`,
-    metadata: { orderId: order.id, productId: product.id },
-  });
+  const session = await stripe.checkout.sessions.create(
+    {
+      mode,
+      customer: customerId,
+      client_reference_id: user.id,
+      line_items: [{ price: product.stripePriceId, quantity: 1 }],
+      success_url: `${appUrl}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${appUrl}/checkout/cancel`,
+      metadata: { orderId: order.id, productId: product.id, tenantId: tenant.id },
+    },
+    { stripeAccount: tenant.stripeConnectAccountId },
+  );
 
   await prisma.order.update({
     where: { id: order.id },

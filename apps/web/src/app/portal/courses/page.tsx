@@ -1,11 +1,13 @@
 import Link from "next/link";
 import { prisma } from "@platform/db";
 import { requireSession } from "@/lib/require-auth";
+import { getLegacyTenantSlug } from "@/lib/accounts/legacy-tenant";
 
 export const dynamic = "force-dynamic";
 
 export default async function MyCoursesPage() {
   const session = await requireSession();
+  const tenantSlug = await getLegacyTenantSlug();
 
   const enrollments = await prisma.enrollment.findMany({
     where: { userId: session.user.id, status: "ACTIVE" },
@@ -57,7 +59,7 @@ export default async function MyCoursesPage() {
       {enrollments.length === 0 && (
         <p className="mt-6 text-sm text-slate-500">
           No enrolled courses yet.{" "}
-          <Link href="/courses" className="text-brand-600">
+          <Link href={`/t/${tenantSlug}/courses`} className="text-brand-600">
             Browse courses
           </Link>
           .

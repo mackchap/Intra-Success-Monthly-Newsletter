@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { requestDraftAction } from "@/app/admin/marketing/actions";
+import { requestDraftAction } from "@/app/a/[tenantId]/admin/marketing/actions";
 
 interface Account {
   id: string;
@@ -10,7 +10,15 @@ interface Account {
   platform: string;
 }
 
-export function DraftRequestForm({ campaignId, accounts }: { campaignId: string; accounts: Account[] }) {
+export function DraftRequestForm({
+  tenantId,
+  campaignId,
+  accounts,
+}: {
+  tenantId: string;
+  campaignId: string;
+  accounts: Account[];
+}) {
   const router = useRouter();
   const [socialAccountId, setSocialAccountId] = useState(accounts[0]?.id ?? "");
   const [brief, setBrief] = useState("");
@@ -24,7 +32,7 @@ export function DraftRequestForm({ campaignId, accounts }: { campaignId: string;
     setLoading(true);
     setError(null);
     try {
-      await requestDraftAction(campaignId, socialAccountId, brief);
+      await requestDraftAction(tenantId, campaignId, socialAccountId, brief);
       setBrief("");
       router.refresh();
     } catch (err) {
