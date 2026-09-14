@@ -21,6 +21,12 @@ export interface RunAgentWithToolsInput {
   // single-shot agents (lead qualification, follow-up drafting).
   history?: Anthropic.MessageParam[];
   tools: AgentTool[];
+  // Anthropic-hosted tools (e.g. web_search) that resolve server-side within
+  // the same API response — never routed through executeTool, since there's
+  // nothing for us to execute. Declared as raw objects rather than importing
+  // an SDK type, since these tool definitions don't share the input_schema
+  // shape custom tools do.
+  serverTools?: Record<string, unknown>[];
   executeTool: (name: string, input: unknown) => Promise<unknown>;
   // Forces the given tool on the first turn only — useful for agents whose
   // whole job is "always call this one write tool" (e.g. lead qualification,
@@ -51,7 +57,7 @@ export async function runAgentWithTools(input: RunAgentWithToolsInput): Promise<
       model: input.model ?? DEFAULT_AGENT_MODEL,
       max_tokens: 1024,
       system: input.system,
-      tools: input.tools,
+      tools: [...input.tools, ...(input.serverTools ?? [])] as Anthropic.MessageCreateParams["tools"],
       tool_choice: turn === 0 && input.forceTool ? { type: "tool", name: input.forceTool } : undefined,
       messages,
     });
