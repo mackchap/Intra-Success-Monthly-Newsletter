@@ -56,6 +56,11 @@ model User {
   orders        Order[]
   subscriptions Subscription[]
 
+  // Marketing
+  connectedSocialAccounts SocialAccount[]
+  createdCampaigns        Campaign[]
+  approvedSocialPosts     SocialPost[]
+
   @@index([role])
 }
 
@@ -783,4 +788,117 @@ model WebhookEvent {
   payload       Json
   processedAt   DateTime?
   createdAt     DateTime @default(now())
+}
+
+// =============================================================================
+// Marketing (Phase 7): Meta (Facebook/Instagram) campaign agent + insights.
+// Scoped to Meta only for now — see CLAUDE.md for why TikTok/X/YouTube/Rumble
+// are deferred. Every post is agent-drafted and human-approved before it ever
+// reaches Meta's API — nothing here auto-publishes.
+// =============================================================================
+
+enum SocialPlatform {
+  FACEBOOK
+  INSTAGRAM
+}
+
+// A connected Facebook Page, or its linked Instagram Business account.
+// accessTokenEncrypted is AES-256-GCM ciphertext (see lib/social/crypto.ts) —
+// the token is never stored or logged in plaintext.
+model SocialAccount {
+  id                   String         @id @default(cuid())
+  platform             SocialPlatform
+  externalId           String // Facebook Page id, or Instagram Business Account id
+  displayName          String
+  accessTokenEncrypted String         @db.Text
+  tokenExpiresAt       DateTime?
+  connectedAt          DateTime       @default(now())
+  disconnectedAt       DateTime?
+
+  connectedByUserId String?
+  connectedByUser   User?   @relation(fields: [connectedByUserId], references: [id])
+
+  posts SocialPost[]
+
+  @@unique([platform, externalId])
+}
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+// A named grouping of posts (e.g. "Spring enrollment push"). Approval and
+// publishing happen per-post, not per-campaign — a campaign can have posts
+// at different stages at once.
+model Campaign {
+  id        String         @id @default(cuid())
+  name      String
+  goal      String? // the brief the agent was given, kept for context
+  status    CampaignStatus @default(DRAFT)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  createdByUserId String?
+  createdByUser   User?   @relation(fields: [createdByUserId], references: [id])
+
+  posts SocialPost[]
+}
+
+enum SocialPostStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  SCHEDULED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  REJECTED
+}
+
+// One planned or published post to one platform. The agent only ever creates
+// rows in DRAFT/PENDING_APPROVAL — a human moving a post to APPROVED is what
+// makes it eligible to publish; nothing here calls Meta's API on its own.
+model SocialPost {
+  id             String           @id @default(cuid())
+  platform       SocialPlatform
+  caption        String           @db.Text
+  mediaUrl       String? // image/video URL Meta fetches when publishing — staff attaches this; the agent can't generate real media
+  imageBrief     String?          @db.Text // agent's description of what visual belongs here, until staff attaches mediaUrl
+  status         SocialPostStatus @default(DRAFT)
+  scheduledFor   DateTime?
+  publishedAt    DateTime?
+  externalPostId String? // the id Meta returns once published
+  error          String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id])
+
+  socialAccountId String
+  socialAccount   SocialAccount @relation(fields: [socialAccountId], references: [id])
+
+  approvedByUserId String?
+  approvedByUser   User?     @relation(fields: [approvedByUserId], references: [id])
+  approvedAt       DateTime?
+
+  insights InsightSnapshot[]
+
+  @@index([status])
+  @@index([scheduledFor])
+}
+
+// A point-in-time pull of a published post's performance. The insights agent
+// reads these rather than calling Meta's API itself on every question.
+model InsightSnapshot {
+  id         String   @id @default(cuid())
+  metrics    Json // { reach, impressions, likes, comments, shares, clicks, ... } — shape varies by platform
+  capturedAt DateTime @default(now())
+
+  socialPostId String
+  socialPost   SocialPost @relation(fields: [socialPostId], references: [id])
+
+  @@index([socialPostId, capturedAt])
 }

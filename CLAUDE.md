@@ -13,6 +13,8 @@ A business platform combining:
 4. **Academy** — courses, modules, lessons, enrollment, progress, certificates
 5. **Payments** — Stripe Checkout + Billing, webhooks driving CRM/Academy state
 6. **AI agents** — Anthropic API tool-calling agents that read/write CRM + Academy data
+7. **Marketing** — an AI agent that drafts (and, once approved, posts) Facebook/Instagram
+   campaigns, plus a research agent for marketing strategy recommendations
 
 ## Phased build plan
 
@@ -23,7 +25,8 @@ A business platform combining:
 | 3 | Stripe integration + webhooks (products, checkout, subscriptions) | ✅ done |
 | 4 | Academy (courses, enrollment, progress, certificates) | ✅ done |
 | 5 | Website, client portal, funnel builder | ✅ done |
-| 6 | Automation sequences, AI agents, analytics dashboard | ✅ done (this commit) |
+| 6 | Automation sequences, AI agents, analytics dashboard | ✅ done |
+| 7 | Marketing agents: Facebook/Instagram drafting + posting, strategy insights | ✅ done (this commit) |
 
 Each phase is built and reviewed before the next starts. Do not jump ahead —
 if you're an AI agent continuing this work, check this table and the git log
@@ -44,7 +47,10 @@ before assuming what exists.
 - **Video**: Mux (primary) / Vimeo embeds — no self-hosted video, added in Phase 4
 - **File storage**: Cloudflare R2 (S3-compatible) — no local filesystem storage,
   since Railway containers are stateless
-- **AI agents**: Anthropic API with tool calling — added in Phase 6
+- **AI agents**: Anthropic API with tool calling — added in Phase 6, extended with the native
+  `web_search` server tool in Phase 7
+- **Social**: Meta Graph API (Facebook Pages + Instagram Business accounts) — added in Phase 7;
+  no first-party Node SDK, so it's a thin `fetch` wrapper (see `lib/social/meta.ts`)
 - **Hosting**: Railway (web service + worker service + Postgres + Redis plugins)
 
 ## Folder structure
@@ -514,6 +520,93 @@ before there's real business logic to test.
     routing, and the UI's error handling — is wired correctly all the way to Anthropic's auth layer,
     with only the final completion blocked by the missing key. Same accepted pattern as Stripe/
     Resend/Twilio in every prior phase.
+
+## Marketing agents: Facebook & Instagram (Phase 7)
+
+- **Scope, deliberately narrow**: only Meta (Facebook Pages + linked Instagram Business
+  accounts) is wired up. TikTok, X, YouTube, and Rumble were all evaluated and explicitly
+  deferred — TikTok's Content Posting API requires a 2–6 week manual audit before posts can go
+  public at all; X moved to pay-per-use pricing in 2026 (~$0.015–$0.20 per post, no free tier);
+  and Rumble currently has **no official API for uploading/posting** — every "Rumble API" that
+  exists is a third-party scraper for reading data, not a publishing path. Don't build a Rumble
+  "auto-poster" against one of those; if a real posting API ever ships, treat it as a new,
+  separate integration, not a client for these third-party scrapers.
+- **Every post is agent-drafted and human-approved — nothing auto-publishes.** This mirrors the
+  follow-up-email agent's convention exactly, and for a stronger reason here: a bad social post
+  is public and effectively unrecoverable the moment it's live, unlike an unsent email draft. The
+  `SocialPost.status` lifecycle is `DRAFT → APPROVED → (PUBLISHING → PUBLISHED | FAILED)`, with a
+  `SCHEDULED` branch off `APPROVED`; only a human moving a post to `APPROVED` (via
+  `/admin/marketing/[id]`) makes it eligible to actually reach Meta's API. The agent itself can
+  only ever create `DRAFT` rows.
+- **Connecting an account is real OAuth, not an API key paste**: `/api/social/meta/connect`
+  redirects to Meta's OAuth dialog (with a double-submit-cookie `state` param for CSRF
+  protection); `/api/social/meta/callback` exchanges the code for a long-lived user token,
+  enumerates every Facebook Page the user manages via `/me/accounts`, and upserts a
+  `SocialAccount` per Page **and** per linked Instagram Business account (Instagram publishing
+  goes through the Page's own token — there's no separate Instagram login). Access tokens are
+  encrypted at rest (`apps/web/src/lib/social/crypto.ts`, AES-256-GCM, key from
+  `SOCIAL_TOKEN_ENCRYPTION_KEY`) — these are live credentials that can post on a real account, so
+  they get the same care as any other secret, arguably more.
+- **No first-party Meta Node SDK exists**, so `lib/social/meta.ts` is a thin `fetch` wrapper
+  over the Graph API (pinned to a specific version, same rationale as pinning any external API
+  version). Instagram publishing is a genuine two-step Graph API flow — create a media container,
+  then publish that container — there's no single-call equivalent to a Facebook Page's `/feed`
+  endpoint. This file is duplicated between `apps/web` (OAuth connect flow) and `apps/worker`
+  (the actual publish call) rather than shared, per this repo's standing rule that the two apps
+  share nothing beyond `@platform/db`.
+- **Publishing — immediate or scheduled — always goes through the worker**, never the web
+  request cycle: `apps/web/src/lib/queues/social-posts.ts` is a lazy BullMQ producer;
+  `apps/worker/src/queues/social-posts.ts` owns the consumer (`processSocialPostJob`, exported
+  standalone like every other job processor in this worker for unit-testability). "Publish now"
+  and "Schedule for later" are the same job with a different `delay` — 0ms vs. the computed gap
+  to `scheduledFor`. The processor re-checks the post is still `APPROVED`/`SCHEDULED` before
+  publishing (it may have been rejected or already published since the job was queued), sets
+  `PUBLISHING` during the actual API call, and lands on `PUBLISHED` (with the real
+  `externalPostId`) or `FAILED` (with the error message, surfaced back in the admin UI with a
+  "Retry publish" button).
+- **The agent can't generate real images.** Rather than inventing a fake `mediaUrl` (which would
+  silently produce broken posts), `draftSocialPost` has the agent write an `imageBrief` — a plain
+  description of what visual belongs on the post — and a human attaches the real `mediaUrl`
+  during review. Instagram posts are blocked from publishing without one (Instagram's API has no
+  text-only post type); Facebook Page posts can go out as text alone.
+- **Both marketing agents use Claude's native `web_search` server tool** (`web_search_20260209`)
+  to stay grounded in *current* platform best practices and public benchmarks, rather than
+  relying on training-time knowledge that goes stale the moment algorithms or formats change.
+  This required one small extension to the shared `runAgentWithTools` helper
+  (`apps/web/src/lib/agents/run.ts`): a `serverTools` field, merged into the `tools` array
+  alongside our own executable tools. Server tools resolve entirely on Anthropic's side within
+  the same API response (no `tool_use` block our loop needs to execute), so no change to the
+  loop's control flow was needed — only the type of what gets sent.
+  - **Facebook/Instagram drafting agent** (`apps/web/src/lib/agents/social/facebook-instagram.ts`):
+    given a platform and a staff-written brief, researches current best practices for that
+    platform if useful, then calls `draft_post` once with a caption, hashtags, and an
+    `imageBrief`. Deliberately *not* forced via `forceTool` (unlike the single-shot agents from
+    Phase 6) — forcing would happen on turn 0, before the agent has had a chance to search first,
+    so this one relies on a clear system-prompt instruction plus a `maxTurns` generous enough for
+    search-then-draft, with the same "did the agent actually produce a draft" guard as every
+    forced agent.
+  - **Marketing insights agent** (`apps/web/src/lib/agents/marketing-insights.ts`): advisory-only,
+    no write tool, matching the funnel-optimizer agent's pattern exactly. Combines `web_search`
+    (what's working elsewhere) with a `get_own_performance` read tool over our own
+    `SocialPost`/`InsightSnapshot` data, and says plainly when there isn't enough of our own data
+    yet rather than inventing a conclusion.
+- **UI**: `/admin/marketing` lists connected accounts and campaigns, with the "Connect Facebook &
+  Instagram" link only shown when no account is connected yet. `/admin/marketing/[id]` is a
+  campaign's detail page — request a draft, edit the caption/attach media inline, approve/reject,
+  then publish now or schedule. The "request a draft" and "get recommendations" UI pieces are
+  Client Components calling their Server Actions directly (not `<form action=...>`) so a live API
+  failure shows an inline error instead of Next.js's default unhandled-error page — this was a
+  real bug caught during live verification (the first version used a plain form action, and an
+  agent failure crashed the page instead of degrading gracefully like every other agent-triggering
+  UI in this app already does).
+- **Testing without real Meta/Anthropic credentials**: same accepted pattern as every prior
+  phase. `lib/social/meta.ts`, `crypto.ts`, `connect.ts`, the drafting/insights agents, and the
+  publish job processor are all unit-tested with mocked `fetch`/`@platform/db`/`runAgentWithTools`.
+  Live verification exercised everything that doesn't require a real Meta App or Anthropic key:
+  logging in, connecting-account UI state, campaign creation, and — with a manually-inserted test
+  `SocialAccount` row — the full draft-request and insights-recommendation round trip, both of
+  which made genuine HTTPS calls to Anthropic's real API and received a real `401 invalid API key`
+  response rather than a mock, then displayed it inline exactly as designed.
 
 ## Deploying to Railway
 

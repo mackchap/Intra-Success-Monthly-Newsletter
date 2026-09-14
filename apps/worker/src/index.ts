@@ -3,17 +3,20 @@ import { createSequenceStepWorker } from "./queues/sequences";
 import { createSequenceTriggerWorker } from "./queues/sequence-triggers";
 import { createLeadQualificationWorker } from "./queues/lead-qualification";
 import { createManualMessageWorker } from "./queues/manual-message";
+import { createSocialPostWorker } from "./queues/social-posts";
 
 const sequenceStepWorker = createSequenceStepWorker();
 const sequenceTriggerWorker = createSequenceTriggerWorker();
 const leadQualificationWorker = createLeadQualificationWorker();
 const manualMessageWorker = createManualMessageWorker();
+const socialPostWorker = createSocialPostWorker();
 
 for (const [name, worker] of [
   ["sequence-steps", sequenceStepWorker],
   ["sequence-triggers", sequenceTriggerWorker],
   ["lead-qualification", leadQualificationWorker],
   ["manual-message", manualMessageWorker],
+  ["social-posts", socialPostWorker],
 ] as const) {
   worker.on("ready", () => console.log(`Worker connected to Redis, listening on queue: ${name}`));
   worker.on("failed", (job, err) => console.error(`[${name}] job ${job?.id} failed:`, err));
@@ -26,6 +29,7 @@ async function shutdown() {
     sequenceTriggerWorker.close(),
     leadQualificationWorker.close(),
     manualMessageWorker.close(),
+    socialPostWorker.close(),
   ]);
   await prisma.$disconnect();
   process.exit(0);

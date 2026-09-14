@@ -132,4 +132,34 @@ describe("runAgentWithTools", () => {
       { role: "user", content: "Can you say more?" },
     ]);
   });
+
+  it("merges serverTools alongside custom tools without routing them through executeTool", async () => {
+    vi.mocked(anthropic.messages.create).mockResolvedValue({
+      content: [
+        { type: "server_tool_use", id: "srv_1", name: "web_search", input: { query: "current best practices" } },
+        { type: "web_search_tool_result", tool_use_id: "srv_1", content: [{ title: "Result", url: "https://example.com" }] },
+        { type: "text", text: "Based on current research, here's my answer." },
+      ],
+      stop_reason: "end_turn",
+    } as never);
+
+    const executeTool = vi.fn();
+    const result = await runAgentWithTools({
+      system: "s",
+      userMessage: "What's trending?",
+      tools: [{ name: "my_tool", description: "d", input_schema: { type: "object" } }],
+      serverTools: [{ type: "web_search_20260209", name: "web_search", max_uses: 3 }],
+      executeTool,
+    });
+
+    const callArgs = vi.mocked(anthropic.messages.create).mock.calls[0][0];
+    expect(callArgs.tools).toEqual([
+      { name: "my_tool", description: "d", input_schema: { type: "object" } },
+      { type: "web_search_20260209", name: "web_search", max_uses: 3 },
+    ]);
+    // The server tool already resolved within this same response — no
+    // tool_use block for our loop to execute, so executeTool never runs.
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(result.finalText).toBe("Based on current research, here's my answer.");
+  });
 });
