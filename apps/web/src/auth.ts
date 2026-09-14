@@ -39,7 +39,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           id: user.id,
           email: user.email,
           name: user.name,
-          role: user.role,
+          isPlatformAdmin: user.isPlatformAdmin,
         };
       },
     }),

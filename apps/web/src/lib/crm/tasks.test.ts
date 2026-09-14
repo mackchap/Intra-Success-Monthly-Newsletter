@@ -22,7 +22,7 @@ describe("createTask", () => {
   it("creates a task and logs a TASK_CREATED activity", async () => {
     vi.mocked(prisma.task.create).mockResolvedValue({ id: "task-1", title: "Follow up" } as never);
 
-    await createTask({ title: "Follow up", contactId: "contact-1", actorId: "user-1" });
+    await createTask({ tenantId: "tenant-1", title: "Follow up", contactId: "contact-1", actorId: "user-1" });
 
     expect(prisma.activity.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -36,7 +36,7 @@ describe("createTask", () => {
   it("allows a task with no contact/deal attachment (general task)", async () => {
     vi.mocked(prisma.task.create).mockResolvedValue({ id: "task-2", title: "Review pipeline" } as never);
 
-    await createTask({ title: "Review pipeline", actorId: "user-1" });
+    await createTask({ tenantId: "tenant-1", title: "Review pipeline", actorId: "user-1" });
 
     expect(prisma.task.create).toHaveBeenCalled();
     expect(prisma.activity.create).toHaveBeenCalled();
@@ -51,6 +51,7 @@ describe("completeTask", () => {
   it("marks a task completed and logs a TASK_COMPLETED activity", async () => {
     vi.mocked(prisma.task.update).mockResolvedValue({
       id: "task-1",
+      tenantId: "tenant-1",
       title: "Follow up",
       contactId: "contact-1",
       dealId: null,

@@ -7,10 +7,16 @@ import {
   EnrollmentSource,
   OrderStatus,
   ProductType,
+  StripeConnectStatus,
   SubscriptionStatus,
 } from "@platform/db";
 import { moveDealStage } from "@/lib/crm/deals";
 import { revokeMembershipEnrollments } from "@/lib/academy/enrollment";
+import {
+  handlePlatformCheckoutCompleted,
+  handlePlatformSubscriptionDeleted,
+  handlePlatformSubscriptionUpsert,
+} from "@/lib/billing/platform-subscription";
 
 // ---------------------------------------------------------------------------
 // Product/Price sync — Stripe Dashboard/API is the source of truth for what's
@@ -122,14 +128,25 @@ export async function handleCheckoutSessionCompleted(session: Stripe.Checkout.Se
   }
 
   if (updated.contactId || updated.dealId) {
-    await prisma.activity.create({
-      data: {
-        type: ActivityType.ORDER_PAID,
-        contactId: updated.contactId,
-        dealId: updated.dealId,
-        metadata: { orderId: updated.id, amountCents: updated.amountCents },
-      },
-    });
+    // Contact/Deal are already tenant-scoped (Phase 8) — derive the
+    // Activity's tenantId from whichever of them this order is attached to,
+    // rather than assuming a tenant here.
+    const tenantId = updated.dealId
+      ? (await prisma.deal.findUnique({ where: { id: updated.dealId }, select: { tenantId: true } }))?.tenantId
+      : (await prisma.contact.findUnique({ where: { id: updated.contactId! }, select: { tenantId: true } }))
+          ?.tenantId;
+
+    if (tenantId) {
+      await prisma.activity.create({
+        data: {
+          tenantId,
+          type: ActivityType.ORDER_PAID,
+          contactId: updated.contactId,
+          dealId: updated.dealId,
+          metadata: { orderId: updated.id, amountCents: updated.amountCents },
+        },
+      });
+    }
   }
 }
 
@@ -229,6 +246,29 @@ export async function handleSubscriptionDeleted(subscription: Stripe.Subscriptio
 }
 
 // ---------------------------------------------------------------------------
+// Stripe Connect (tenant-connected accounts)
+// ---------------------------------------------------------------------------
+
+// Stripe sends account.updated for a connected account's own events too
+// (once Connect events are enabled on the webhook endpoint), distinguished
+// by `event.account` being set — see processStripeWebhookEvent below. This
+// is the authoritative status source; the onboarding return_url
+// (lib/billing/connect.ts's syncConnectAccountStatus) just avoids a stale
+// UI in between.
+export async function handleConnectAccountUpdated(account: Stripe.Account): Promise<void> {
+  const status = account.charges_enabled
+    ? StripeConnectStatus.ACTIVE
+    : account.details_submitted
+      ? StripeConnectStatus.PENDING
+      : StripeConnectStatus.PENDING;
+
+  await prisma.tenant.updateMany({
+    where: { stripeConnectAccountId: account.id },
+    data: { stripeConnectStatus: status, chargesEnabled: account.charges_enabled ?? false },
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch + idempotency
 // ---------------------------------------------------------------------------
 
@@ -253,18 +293,34 @@ export async function processStripeWebhookEvent(event: Stripe.Event) {
     case "price.updated":
       await handlePriceUpsert(event.data.object as Stripe.Price);
       break;
-    case "checkout.session.completed":
-      await handleCheckoutSessionCompleted(event.data.object as Stripe.Checkout.Session);
+    case "checkout.session.completed": {
+      const session = event.data.object as Stripe.Checkout.Session;
+      if (session.metadata?.kind === "platform_subscription") {
+        await handlePlatformCheckoutCompleted(session);
+      } else {
+        await handleCheckoutSessionCompleted(session);
+      }
       break;
+    }
     case "charge.refunded":
       await handleChargeRefunded(event.data.object as Stripe.Charge);
       break;
     case "customer.subscription.created":
     case "customer.subscription.updated":
+      // Two independent, non-overlapping customer namespaces on the same
+      // Stripe account (a tenant's own customer vs. the tenant itself) — each
+      // handler no-ops if the event's customer id isn't theirs.
       await handleSubscriptionUpsert(event.data.object as Stripe.Subscription);
+      await handlePlatformSubscriptionUpsert(event.data.object as Stripe.Subscription);
       break;
     case "customer.subscription.deleted":
       await handleSubscriptionDeleted(event.data.object as Stripe.Subscription);
+      await handlePlatformSubscriptionDeleted(event.data.object as Stripe.Subscription);
+      break;
+    case "account.updated":
+      // Only ever fires for a connected (Tenant) account, never the
+      // platform's own — see handleConnectAccountUpdated.
+      await handleConnectAccountUpdated(event.data.object as Stripe.Account);
       break;
     default:
       // Unhandled event types are acknowledged, not errors.

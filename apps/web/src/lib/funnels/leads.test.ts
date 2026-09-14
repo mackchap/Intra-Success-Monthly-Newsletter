@@ -23,6 +23,10 @@ vi.mock("@/lib/queues/lead-qualification", () => ({
   enqueueLeadQualification: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/accounts/legacy-tenant", () => ({
+  getLegacyTenantId: vi.fn().mockResolvedValue("tenant-1"),
+}));
+
 import { prisma } from "@platform/db";
 import { enqueueFunnelSubmissionTrigger } from "@/lib/queues/sequence-triggers";
 import { enqueueLeadQualification } from "@/lib/queues/lead-qualification";

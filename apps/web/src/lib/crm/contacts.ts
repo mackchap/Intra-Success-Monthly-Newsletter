@@ -2,6 +2,7 @@ import { prisma } from "@platform/db";
 import { enqueueLeadQualification } from "@/lib/queues/lead-qualification";
 
 export interface CreateContactInput {
+  tenantId: string;
   email: string;
   firstName?: string;
   lastName?: string;
@@ -14,6 +15,7 @@ export interface CreateContactInput {
 export async function createContact(input: CreateContactInput) {
   const contact = await prisma.contact.create({
     data: {
+      tenantId: input.tenantId,
       email: input.email,
       firstName: input.firstName,
       lastName: input.lastName,

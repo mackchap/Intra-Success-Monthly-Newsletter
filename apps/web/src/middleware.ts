@@ -14,24 +14,36 @@ const FUNNEL_SESSION_HEADER = "x-fs-id";
 // this only keeps unauthenticated/under-privileged users out of whole sections.
 export default auth((req) => {
   const { nextUrl } = req;
-  const role = req.auth?.user?.role;
+  const isPlatformAdmin = req.auth?.user?.isPlatformAdmin ?? false;
 
+  // Legacy, not-yet-tenant-scoped surfaces (Academy/Funnels/Marketing/
+  // Products/Sequences) — gated by isPlatformAdmin until Phase 9 moves them
+  // onto Tenant/Membership too. See CLAUDE.md's Phase 8 section.
   const isAdminRoute = nextUrl.pathname.startsWith("/admin");
-  const isStaffRoute = nextUrl.pathname.startsWith("/staff");
+  // Tenant-scoped CRM. Middleware can only confirm *a* session exists here —
+  // it can't reach Prisma from the Edge runtime to check which Tenant(s)
+  // that session belongs to, so the real per-tenant membership/role check
+  // happens in requireAccountRole() inside the page/action itself (defense
+  // in depth, same split every other route already uses).
+  const isAccountRoute = nextUrl.pathname.startsWith("/a/");
+  const isPlatformAdminRoute = nextUrl.pathname.startsWith("/platform-admin");
   const isPortalRoute = nextUrl.pathname.startsWith("/portal");
   const isFunnelRoute = nextUrl.pathname.startsWith("/f/");
+  // Authenticated-only, not tenant-specific: the account switcher and the
+  // "start a new business" onboarding flow.
+  const isAccountsMetaRoute = nextUrl.pathname.startsWith("/accounts") || nextUrl.pathname.startsWith("/start");
 
   const loginUrl = new URL("/login", nextUrl);
 
-  if (isAdminRoute && role !== "ADMIN") {
+  if (isAdminRoute && !isPlatformAdmin) {
     return NextResponse.redirect(loginUrl);
   }
 
-  if (isStaffRoute && role !== "ADMIN" && role !== "STAFF") {
+  if (isPlatformAdminRoute && !isPlatformAdmin) {
     return NextResponse.redirect(loginUrl);
   }
 
-  if (isPortalRoute && !req.auth) {
+  if ((isAccountRoute || isPortalRoute || isAccountsMetaRoute) && !req.auth) {
     return NextResponse.redirect(loginUrl);
   }
 
@@ -60,5 +72,13 @@ export default auth((req) => {
 });
 
 export const config = {
-  matcher: ["/admin/:path*", "/staff/:path*", "/portal/:path*", "/f/:path*"],
+  matcher: [
+    "/admin/:path*",
+    "/a/:path*",
+    "/platform-admin/:path*",
+    "/portal/:path*",
+    "/f/:path*",
+    "/accounts/:path*",
+    "/start/:path*",
+  ],
 };

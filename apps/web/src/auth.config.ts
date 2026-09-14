@@ -14,14 +14,14 @@ export const authConfig = {
   callbacks: {
     jwt({ token, user }) {
       if (user) {
-        token.role = user.role;
+        token.isPlatformAdmin = user.isPlatformAdmin;
       }
       return token;
     },
     session({ session, token }) {
       if (session.user) {
         session.user.id = token.sub as string;
-        session.user.role = token.role;
+        session.user.isPlatformAdmin = token.isPlatformAdmin ?? false;
       }
       return session;
     },

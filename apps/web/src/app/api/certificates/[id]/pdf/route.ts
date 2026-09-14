@@ -21,8 +21,10 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   }
 
   const isOwner = certificate.userId === session.user.id;
-  const isStaff = session.user.role === "ADMIN" || session.user.role === "STAFF";
-  if (!isOwner && !isStaff) {
+  // Academy/Certificate isn't tenant-scoped yet (Phase 9) — same interim
+  // "platform admin only" gate requireStaffSession() uses for other
+  // not-yet-tenant-scoped modules.
+  if (!isOwner && !session.user.isPlatformAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 

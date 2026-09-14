@@ -2,6 +2,7 @@ import { prisma, ActivityType, DealStatus } from "@platform/db";
 import { ValidationError } from "./errors";
 
 export interface CreateDealInput {
+  tenantId: string;
   title: string;
   contactId: string;
   companyId?: string;
@@ -17,6 +18,7 @@ export interface CreateDealInput {
 export async function createDeal(input: CreateDealInput) {
   const deal = await prisma.deal.create({
     data: {
+      tenantId: input.tenantId,
       title: input.title,
       contactId: input.contactId,
       companyId: input.companyId,
@@ -31,6 +33,7 @@ export async function createDeal(input: CreateDealInput) {
 
   await prisma.activity.create({
     data: {
+      tenantId: input.tenantId,
       type: ActivityType.DEAL_CREATED,
       actorId: input.actorId,
       contactId: deal.contactId,
@@ -75,6 +78,7 @@ export async function moveDealStage(dealId: string, newStageId: string, actorId?
 
   await prisma.activity.create({
     data: {
+      tenantId: deal.tenantId,
       type: newStage.isWon
         ? ActivityType.DEAL_WON
         : newStage.isLost

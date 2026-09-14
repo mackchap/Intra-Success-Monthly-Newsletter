@@ -24,6 +24,7 @@ describe("moveDealStage", () => {
   it("moves an open deal to a regular stage and logs STAGE_CHANGED", async () => {
     vi.mocked(prisma.deal.findUniqueOrThrow).mockResolvedValue({
       id: "deal-1",
+      tenantId: "tenant-1",
       status: DealStatus.OPEN,
       stageId: "stage-lead",
       contactId: "contact-1",
@@ -55,6 +56,7 @@ describe("moveDealStage", () => {
   it("closes the deal as WON and logs DEAL_WON when moved into a won stage", async () => {
     vi.mocked(prisma.deal.findUniqueOrThrow).mockResolvedValue({
       id: "deal-1",
+      tenantId: "tenant-1",
       status: DealStatus.OPEN,
       stageId: "stage-negotiation",
       contactId: "contact-1",
@@ -81,6 +83,7 @@ describe("moveDealStage", () => {
   it("closes the deal as LOST and logs DEAL_LOST when moved into a lost stage", async () => {
     vi.mocked(prisma.deal.findUniqueOrThrow).mockResolvedValue({
       id: "deal-1",
+      tenantId: "tenant-1",
       status: DealStatus.OPEN,
       stageId: "stage-negotiation",
       contactId: "contact-1",
@@ -107,6 +110,7 @@ describe("moveDealStage", () => {
   it("refuses to move a deal that is already closed", async () => {
     vi.mocked(prisma.deal.findUniqueOrThrow).mockResolvedValue({
       id: "deal-1",
+      tenantId: "tenant-1",
       status: DealStatus.WON,
       stageId: "stage-won",
       contactId: "contact-1",
@@ -132,6 +136,7 @@ describe("createDeal", () => {
     } as never);
 
     await createDeal({
+      tenantId: "tenant-1",
       title: "New deal",
       contactId: "contact-1",
       pipelineId: "pipeline-1",

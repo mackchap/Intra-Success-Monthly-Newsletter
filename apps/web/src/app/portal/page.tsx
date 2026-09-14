@@ -29,7 +29,7 @@ export default async function PortalPage() {
         <div>
           <h1 className="text-2xl font-semibold">Client portal</h1>
           <p className="mt-2 text-slate-600">
-            Signed in as {session.user.email} ({session.user.role}).
+            Signed in as {session.user.email}.
           </p>
         </div>
         <form action={manageBillingAction}>

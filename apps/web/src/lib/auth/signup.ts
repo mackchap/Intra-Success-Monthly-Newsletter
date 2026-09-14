@@ -1,5 +1,5 @@
 import { hash } from "bcryptjs";
-import { prisma, Role } from "@platform/db";
+import { prisma } from "@platform/db";
 import { ValidationError } from "@/lib/crm/errors";
 
 export interface CreateUserAccountInput {
@@ -18,7 +18,6 @@ export async function createUserAccount(input: CreateUserAccountInput) {
     data: {
       email: input.email,
       name: input.name,
-      role: Role.CUSTOMER,
       password: await hash(input.password, 10),
     },
   });

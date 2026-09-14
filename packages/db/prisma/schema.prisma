@@ -13,38 +13,43 @@ datasource db {
 }
 
 // =============================================================================
-// Auth (Auth.js / NextAuth — PrismaAdapter shape) + platform roles
+// Auth (Auth.js / NextAuth — PrismaAdapter shape) + tenancy
+//
+// Phase 8 introduced multi-tenancy: `Account` is a tenant (one of your
+// customers' businesses running on this platform, e.g. one HighLevel
+// "sub-account" equivalent). A `User` no longer has one global role — they
+// hold a `Membership` (with a role) per `Account` they belong to, since the
+// same person can own or staff more than one tenant. `User.isPlatformAdmin`
+// is the separate, orthogonal meta-level flag for *your* team managing every
+// tenant from `/platform-admin` — it has nothing to do with any Membership.
+// See CLAUDE.md's Phase 8 section for the full rationale (including why
+// Funnels/Academy/Marketing/Orders are NOT yet tenant-scoped).
 // =============================================================================
 
-enum Role {
-  ADMIN
-  STAFF
-  CUSTOMER
-}
-
 model User {
-  id            String    @id @default(cuid())
-  name          String?
-  email         String?   @unique
-  emailVerified DateTime?
-  image         String?
-  password      String? // bcrypt hash; null for OAuth-only users
-  role          Role      @default(CUSTOMER)
-  stripeCustomerId String? @unique
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id               String    @id @default(cuid())
+  name             String?
+  email            String?   @unique
+  emailVerified    DateTime?
+  image            String?
+  password         String? // bcrypt hash; null for OAuth-only users
+  isPlatformAdmin  Boolean   @default(false)
+  stripeCustomerId String?   @unique
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  accounts Account[]
-  sessions Session[]
+  accounts    Account[]
+  sessions    Session[]
+  memberships Membership[]
 
   // CRM: a portal user may be linked to exactly one CRM contact
   contact Contact?
 
   // CRM ownership (staff/admin)
-  ownedContacts Contact[] @relation("ContactOwner")
-  ownedDeals    Deal[]    @relation("DealOwner")
-  assignedTasks Task[]    @relation("TaskAssignee")
-  authoredNotes Note[]    @relation("NoteAuthor")
+  ownedContacts Contact[]  @relation("ContactOwner")
+  ownedDeals    Deal[]     @relation("DealOwner")
+  assignedTasks Task[]     @relation("TaskAssignee")
+  authoredNotes Note[]     @relation("NoteAuthor")
   activities    Activity[] @relation("ActivityActor")
 
   // Academy
@@ -61,9 +66,13 @@ model User {
   createdCampaigns        Campaign[]
   approvedSocialPosts     SocialPost[]
 
-  @@index([role])
+  @@index([isPlatformAdmin])
 }
 
+// Auth.js's own OAuth account-link table — @auth/prisma-adapter hardcodes
+// the Prisma Client accessor name `prisma.account`, so this model MUST stay
+// named `Account` regardless of what we call the Phase 8 tenant concept
+// below (named `Tenant` specifically to avoid colliding with this).
 model Account {
   id                String  @id @default(cuid())
   userId            String
@@ -82,6 +91,108 @@ model Account {
 
   @@unique([provider, providerAccountId])
   @@index([userId])
+}
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  STAFF
+  CUSTOMER
+}
+
+// A tenant — one of your customers' businesses running on this platform
+// (the equivalent of a HighLevel "sub-account"/"location"). Called `Tenant`
+// rather than `Account` purely because Auth.js's adapter already owns that
+// name above; UI copy and route segments still say "Account" since that's
+// the natural business term. Every tenant-scoped model below carries a
+// `tenantId` FK to this. See CLAUDE.md's Phase 8 section for which modules
+// are tenant-scoped so far.
+model Tenant {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // This tenant's OWN connected Stripe account. Their customers' payments
+  // (course sales, listing upgrades, funnel offers — once those modules are
+  // tenant-scoped in Phase 9) settle here, never in the platform's own
+  // Stripe account — see CLAUDE.md for why Stripe Connect, not one shared
+  // Stripe account, is non-negotiable once tenants are real businesses.
+  stripeConnectAccountId String?             @unique
+  stripeConnectStatus    StripeConnectStatus @default(NOT_CONNECTED)
+  chargesEnabled         Boolean             @default(false)
+
+  memberships          Membership[]
+  platformSubscription PlatformSubscription?
+
+  contacts   Contact[]
+  companies  Company[]
+  pipelines  Pipeline[]
+  deals      Deal[]
+  tasks      Task[]
+  notes      Note[]
+  activities Activity[]
+
+  @@index([slug])
+}
+
+// A User's role within one specific Tenant. A user with no Membership on a
+// Tenant has no access to it at all, regardless of any other Membership
+// they hold elsewhere — this is the whole tenant isolation boundary.
+model Membership {
+  id        String         @id @default(cuid())
+  role      MembershipRole @default(STAFF)
+  createdAt DateTime       @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tenantId])
+  @@index([tenantId])
+  @@index([userId])
+}
+
+enum StripeConnectStatus {
+  NOT_CONNECTED
+  PENDING
+  ACTIVE
+  RESTRICTED
+}
+
+enum PlatformPlan {
+  TRIAL
+  STANDARD
+}
+
+enum PlatformSubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+// The Tenant's OWN subscription to *this platform* (what you charge a
+// tenant to use Marlow/Kelvo) — completely separate from anything the
+// tenant charges their own customers via their connected Stripe account
+// above. Lives on the platform's Stripe account, never Connect.
+model PlatformSubscription {
+  id                   String                     @id @default(cuid())
+  plan                 PlatformPlan               @default(TRIAL)
+  status               PlatformSubscriptionStatus @default(TRIALING)
+  trialEndsAt          DateTime?
+  stripeCustomerId     String?
+  stripeSubscriptionId String?                    @unique
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean                    @default(false)
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+
+  tenantId String @unique
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
 model Session {
@@ -117,23 +228,29 @@ model Company {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   contacts Contact[]
   deals    Deal[]
 
-  @@index([name])
+  @@index([tenantId, name])
 }
 
 model Contact {
-  id          String   @id @default(cuid())
-  email       String   @unique
-  firstName   String?
-  lastName    String?
-  phone       String?
-  source      String? // e.g. "funnel:evergreen-webinar", "manual", "import"
-  tags        String[] @default([])
+  id           String   @id @default(cuid())
+  email        String
+  firstName    String?
+  lastName     String?
+  phone        String?
+  source       String? // e.g. "funnel:evergreen-webinar", "manual", "import"
+  tags         String[] @default([])
   customFields Json?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   companyId String?
   company   Company? @relation(fields: [companyId], references: [id])
@@ -141,20 +258,26 @@ model Contact {
   ownerId String?
   owner   User?   @relation("ContactOwner", fields: [ownerId], references: [id])
 
-  // Set once this contact creates a portal account (student/customer login)
+  // Set once this contact creates a portal account (student/customer login).
+  // Global, not tenantId-scoped — Academy/portal logins aren't tenant-scoped
+  // until Phase 9, so one User can only ever back one Contact platform-wide
+  // for now.
   userId String? @unique
   user   User?   @relation(fields: [userId], references: [id])
 
-  deals              Deal[]
-  tasks              Task[]
-  notes              Note[]
-  activities         Activity[]
-  funnelSubmissions  FunnelSubmission[]
-  funnelVisits       FunnelVisit[]
+  deals               Deal[]
+  tasks               Task[]
+  notes               Note[]
+  activities          Activity[]
+  funnelSubmissions   FunnelSubmission[]
+  funnelVisits        FunnelVisit[]
   sequenceEnrollments SequenceEnrollment[]
-  messageLogs        MessageLog[]
-  orders             Order[]
+  messageLogs         MessageLog[]
+  orders              Order[]
 
+  // Same email can be a customer of two different tenants, so uniqueness
+  // moved from global to per-account with Phase 8.
+  @@unique([tenantId, email])
   @@index([companyId])
   @@index([ownerId])
 }
@@ -171,19 +294,24 @@ model Pipeline {
   isDefault Boolean  @default(false)
   createdAt DateTime @default(now())
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   stages PipelineStage[]
   deals  Deal[]
+
+  @@index([tenantId])
 }
 
 model PipelineStage {
-  id         String @id @default(cuid())
-  name       String
-  order      Int
+  id          String  @id @default(cuid())
+  name        String
+  order       Int
   probability Int? // 0-100, indicative likelihood of closing from this stage
   // Moving a deal into a stage with either flag set closes it: sets
   // Deal.status/closedAt and logs a DEAL_WON/DEAL_LOST activity.
-  isWon      Boolean @default(false)
-  isLost     Boolean @default(false)
+  isWon       Boolean @default(false)
+  isLost      Boolean @default(false)
 
   pipelineId String
   pipeline   Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
@@ -203,6 +331,9 @@ model Deal {
   closedAt   DateTime?
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   contactId String
   contact   Contact @relation(fields: [contactId], references: [id])
@@ -228,6 +359,7 @@ model Deal {
   activities Activity[]
   orders     Order[]
 
+  @@index([tenantId])
   @@index([contactId])
   @@index([stageId])
   @@index([status])
@@ -243,6 +375,9 @@ model Task {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   assignedToId String?
   assignedTo   User?   @relation("TaskAssignee", fields: [assignedToId], references: [id])
 
@@ -252,6 +387,7 @@ model Task {
   dealId String?
   deal   Deal?   @relation(fields: [dealId], references: [id])
 
+  @@index([tenantId])
   @@index([assignedToId])
   @@index([contactId])
   @@index([dealId])
@@ -262,6 +398,9 @@ model Note {
   body      String   @db.Text
   createdAt DateTime @default(now())
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   authorId String
   author   User   @relation("NoteAuthor", fields: [authorId], references: [id])
 
@@ -271,6 +410,7 @@ model Note {
   dealId String?
   deal   Deal?   @relation(fields: [dealId], references: [id])
 
+  @@index([tenantId])
   @@index([contactId])
   @@index([dealId])
 }
@@ -299,6 +439,9 @@ model Activity {
   metadata  Json?
   createdAt DateTime     @default(now())
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   actorId String?
   actor   User?   @relation("ActivityActor", fields: [actorId], references: [id])
 
@@ -308,6 +451,7 @@ model Activity {
   dealId String?
   deal   Deal?   @relation(fields: [dealId], references: [id])
 
+  @@index([tenantId, createdAt])
   @@index([contactId, createdAt])
   @@index([dealId, createdAt])
 }
@@ -372,13 +516,13 @@ model FunnelStep {
 
 // One row per page view — the raw material for visits/conversion/drop-off analytics.
 model FunnelVisit {
-  id        String   @id @default(cuid())
-  sessionId String // anonymous visitor/session id (cookie-based)
-  referrer  String?
-  utmSource String?
-  utmMedium String?
+  id          String   @id @default(cuid())
+  sessionId   String // anonymous visitor/session id (cookie-based)
+  referrer    String?
+  utmSource   String?
+  utmMedium   String?
   utmCampaign String?
-  createdAt DateTime @default(now())
+  createdAt   DateTime @default(now())
 
   funnelId String
   funnel   Funnel @relation(fields: [funnelId], references: [id])
@@ -443,12 +587,12 @@ enum MessageChannel {
 }
 
 model SequenceStep {
-  id          String         @id @default(cuid())
-  order       Int
-  channel     MessageChannel
-  delayMinutes Int           @default(0) // delay after previous step (or enrollment)
-  subject     String? // email only
-  body        String         @db.Text
+  id           String         @id @default(cuid())
+  order        Int
+  channel      MessageChannel
+  delayMinutes Int            @default(0) // delay after previous step (or enrollment)
+  subject      String? // email only
+  body         String         @db.Text
 
   sequenceId String
   sequence   Sequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
@@ -571,14 +715,14 @@ enum VideoProvider {
 }
 
 model Lesson {
-  id           String        @id @default(cuid())
-  title        String
-  order        Int
-  type         LessonType
-  content      String?       @db.Text // rich text for TEXT lessons, instructions for others
+  id            String         @id @default(cuid())
+  title         String
+  order         Int
+  type          LessonType
+  content       String?        @db.Text // rich text for TEXT lessons, instructions for others
   videoProvider VideoProvider?
-  videoId      String? // Mux playback ID or Vimeo video ID
-  dripDelayDays Int?         // days after enrollment before this lesson unlocks; null = immediate
+  videoId       String? // Mux playback ID or Vimeo video ID
+  dripDelayDays Int? // days after enrollment before this lesson unlocks; null = immediate
 
   moduleId String
   module   Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
@@ -630,12 +774,12 @@ enum EnrollmentStatus {
 }
 
 model Enrollment {
-  id          String           @id @default(cuid())
-  source      EnrollmentSource
-  status      EnrollmentStatus @default(ACTIVE)
-  enrolledAt  DateTime         @default(now())
-  expiresAt   DateTime?
-  revokedAt   DateTime?
+  id         String           @id @default(cuid())
+  source     EnrollmentSource
+  status     EnrollmentStatus @default(ACTIVE)
+  enrolledAt DateTime         @default(now())
+  expiresAt  DateTime?
+  revokedAt  DateTime?
 
   userId String
   user   User   @relation(fields: [userId], references: [id])
@@ -650,11 +794,11 @@ model Enrollment {
 }
 
 model LessonProgress {
-  id                  String    @id @default(cuid())
-  completed           Boolean   @default(false)
-  completedAt         DateTime?
-  videoProgressSeconds Int      @default(0)
-  updatedAt           DateTime  @updatedAt
+  id                   String    @id @default(cuid())
+  completed            Boolean   @default(false)
+  completedAt          DateTime?
+  videoProgressSeconds Int       @default(0)
+  updatedAt            DateTime  @updatedAt
 
   userId String
   user   User   @relation(fields: [userId], references: [id])
@@ -667,9 +811,9 @@ model LessonProgress {
 }
 
 model Certificate {
-  id              String   @id @default(cuid())
-  issuedAt        DateTime @default(now())
-  certificateUrl  String? // generated PDF stored in R2/S3
+  id             String   @id @default(cuid())
+  issuedAt       DateTime @default(now())
+  certificateUrl String? // generated PDF stored in R2/S3
 
   userId String
   user   User   @relation(fields: [userId], references: [id])
@@ -782,12 +926,12 @@ model Subscription {
 
 // Idempotency log for inbound Stripe webhook events.
 model WebhookEvent {
-  id            String   @id @default(cuid())
-  stripeEventId String   @unique
+  id            String    @id @default(cuid())
+  stripeEventId String    @unique
   type          String
   payload       Json
   processedAt   DateTime?
-  createdAt     DateTime @default(now())
+  createdAt     DateTime  @default(now())
 }
 
 // =============================================================================
