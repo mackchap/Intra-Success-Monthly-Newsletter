@@ -25,6 +25,7 @@ export default async function TenantAdminLayout({
     { href: `/a/${tenantId}/admin/sequences`, label: "Sequences" },
     { href: `/a/${tenantId}/admin/marketing`, label: "Marketing" },
     { href: `/a/${tenantId}/admin/products`, label: "Products" },
+    { href: `/a/${tenantId}/admin/directory`, label: "Directory" },
   ];
 
   return (

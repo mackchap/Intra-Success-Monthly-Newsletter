@@ -45,6 +45,7 @@ export async function createCheckoutSession(input: CreateCheckoutSessionInput) {
       userId: user.id,
       productId: product.id,
       courseId: product.courseId,
+      listingId: product.listingId,
       dealId: input.dealId,
       contactId: deal?.contactId,
       funnelId: deal?.funnelId,

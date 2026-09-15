@@ -5,6 +5,7 @@ import {
   DealStatus,
   EnrollmentStatus,
   EnrollmentSource,
+  ListingTier,
   OrderStatus,
   ProductType,
   StripeConnectStatus,
@@ -12,6 +13,7 @@ import {
 } from "@platform/db";
 import { moveDealStage } from "@/lib/crm/deals";
 import { revokeMembershipEnrollments } from "@/lib/academy/enrollment";
+import { upgradeListingTier } from "@/lib/directory/listings";
 import {
   handlePlatformCheckoutCompleted,
   handlePlatformSubscriptionDeleted,
@@ -29,25 +31,42 @@ import {
 // ---------------------------------------------------------------------------
 
 function parseProductType(value: string | undefined): ProductType {
-  if (value === ProductType.COURSE || value === ProductType.FUNNEL_OFFER || value === ProductType.MEMBERSHIP) {
+  if (
+    value === ProductType.COURSE ||
+    value === ProductType.FUNNEL_OFFER ||
+    value === ProductType.MEMBERSHIP ||
+    value === ProductType.LISTING_UPGRADE
+  ) {
     return value;
   }
   return ProductType.FUNNEL_OFFER;
 }
 
+function parseListingTier(value: string | undefined): ListingTier | null {
+  if (value === ListingTier.FEATURED || value === ListingTier.PREMIUM) return value;
+  return null;
+}
+
 export async function handleProductUpsert(product: Stripe.Product, tenantId: string) {
   const type = parseProductType(product.metadata?.type);
   const courseId = product.metadata?.courseId || null;
+  // Only meaningful for LISTING_UPGRADE — which listing this purchase
+  // upgrades, and which tier it grants (a directory can sell more than one
+  // tier, e.g. Featured vs. Premium, at different prices).
+  const listingId = type === ProductType.LISTING_UPGRADE ? product.metadata?.listingId || null : null;
+  const listingTier = type === ProductType.LISTING_UPGRADE ? parseListingTier(product.metadata?.tier) : null;
 
   await prisma.product.upsert({
     where: { stripeProductId: product.id },
-    update: { name: product.name, type, courseId },
+    update: { name: product.name, type, courseId, listingId, listingTier },
     create: {
       tenantId,
       stripeProductId: product.id,
       name: product.name,
       type,
       courseId,
+      listingId,
+      listingTier,
       priceCents: 0,
       currency: "usd",
     },
@@ -113,7 +132,12 @@ export async function handleCheckoutSessionCompleted(session: Stripe.Checkout.Se
       stripePaymentIntentId:
         typeof session.payment_intent === "string" ? session.payment_intent : undefined,
     },
+    include: { product: true },
   });
+
+  if (updated.listingId && updated.product?.listingTier) {
+    await upgradeListingTier(updated.listingId, updated.product.listingTier);
+  }
 
   if (updated.courseId && updated.userId) {
     await prisma.enrollment.upsert({

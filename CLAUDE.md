@@ -19,6 +19,8 @@ names "Marlow"/"Kelvo") combining:
 7. **AI agents** — Anthropic API tool-calling agents that read/write CRM + Academy data
 8. **Marketing** — an AI agent that drafts (and, once approved, posts) Facebook/Instagram
    campaigns, plus a research agent for marketing strategy recommendations
+9. **Directory** — a local-business directory builder (each tenant runs one) with a public
+   AI concierge agent that helps visitors find a listed business
 
 ## Phased build plan
 
@@ -32,8 +34,8 @@ names "Marlow"/"Kelvo") combining:
 | 6 | Automation sequences, AI agents, analytics dashboard | ✅ done |
 | 7 | Marketing agents: Facebook/Instagram drafting + posting, strategy insights | ✅ done |
 | 8 | Multi-tenant foundation: Tenant/Membership, Stripe Connect, platform billing, CRM tenant-scoped | ✅ done |
-| 9 | Tenant-scope Funnels/Academy/Marketing/Orders; move their revenue onto Stripe Connect | ✅ done (this commit) |
-| 10 | Directory module (multi-tenant local-business directory builder, AI concierge agent) | ⬜ not started |
+| 9 | Tenant-scope Funnels/Academy/Marketing/Orders; move their revenue onto Stripe Connect | ✅ done |
+| 10 | Directory module (multi-tenant local-business directory builder, AI concierge agent) | ✅ done (this commit) |
 
 Each phase is built and reviewed before the next starts. Do not jump ahead —
 if you're an AI agent continuing this work, check this table and the git log
@@ -850,6 +852,93 @@ before there's real business logic to test.
   Success Academy hasn't finished connecting Stripe yet — this product can't be purchased until
   they do.`, thrown from `createCheckoutSession` and surfaced by Next.js's error boundary,
   proving the Stripe Connect gate is real and wired all the way from the UI to the DB.
+
+## Directory module (Phase 10)
+
+- **Why this exists**: the original goal behind Phase 8-9's multi-tenant foundation was to
+  eventually support a local-business-directory product (researched against smartdirectory.ai
+  — a HighLevel-based directory builder with an AI concierge). Phase 10 builds that module on
+  top of the now-fully-tenant-scoped platform: each tenant can run **one** local-business
+  directory (kept 1:1 for this phase — a tenant running two distinct directories is a real
+  future need but nothing currently asks for it), listing businesses that are just data our
+  tenant owns, **not** other platform tenants. A listing's real-world owner can claim it and
+  pay to upgrade its tier, settling on the tenant's own Stripe Connect account exactly like a
+  course or membership purchase.
+- **Schema** (`packages/db/prisma/schema.prisma`): `Directory` (unique `tenantId`, created
+  lazily on first visit to its admin settings page — same "create on first use" convention as
+  a `TenantCustomer`'s Stripe Customer), `DirectoryCategory` (unique `[directoryId, slug]`,
+  ordered like Modules/Lessons/FunnelSteps), and `Listing` (unique `[directoryId, slug]`,
+  denormalized `tenantId` for simple tenant-scoped queries — the same convention every other
+  Phase 8/9 business row uses despite being reachable via a parent). `Listing.hours`/`photos`
+  are intentionally simple `Json` fields — no structured schedule UI or upload flow, same
+  rationale as `Quiz.questions`/Academy's pasted-in download URLs. `Product`/`Order` gained a
+  `LISTING_UPGRADE` `ProductType` plus a nullable `listingId`, mirroring the existing
+  `courseId`-per-type pattern; `Product` also gained a nullable `listingTier` (parsed from
+  Stripe Product `metadata.tier`) since a directory can sell more than one upgrade tier (e.g.
+  Featured vs. Premium) and nothing else on `Listing` says which tier a given purchase grants.
+- **Service layer** (`apps/web/src/lib/directory/`): `directories.ts` (directory settings,
+  category CRUD/reordering) and `listings.ts` (listing CRUD, `claimListing`, `searchListings`,
+  `upgradeListingTier`) — each with its own `.test.ts` mocking `@platform/db`, same pattern as
+  every other module. `claimListing` refuses to reassign a listing already claimed by someone
+  else rather than silently overwriting ownership — the same defensive posture Phase 9 added
+  for a re-connected Meta account. `searchListings` is a deliberately simple case-insensitive
+  substring search over name/description/city, scoped to `PUBLISHED` listings only — it backs
+  both the public storefront's search box and the concierge agent's one read tool.
+- **Admin authoring** (`/a/[tenantId]/admin/directory/*`, added to the tenant admin nav):
+  `/directory` is settings (name/description) + category management; `/directory/listings` is
+  the listings list + create form; `/directory/listings/[id]` is the edit form + a
+  publish/unpublish toggle. Every action re-derives `tenantId` from a hidden form field,
+  re-verifies the caller's role via `requireAccountRole(tenantId, "ADMIN")`, and confirms the
+  target directory/listing actually belongs to that tenant before mutating it — the same
+  `requireXInTenant` defense-in-depth pattern Funnels/Academy/Marketing already established.
+- **Public storefront** (`/t/[tenantSlug]/directory/*`, unauthenticated): `/directory` is the
+  home page (search box + category grid), `/directory/category/[categorySlug]` lists that
+  category's listings, `/directory/listings/[listingSlug]` is the full listing detail page
+  (contact info, tier badge, the claim CTA, and the concierge chat widget). Only ever shows
+  `PUBLISHED` listings, same `notFound()`-on-unpublished convention as an unpublished Course.
+- **The AI concierge agent** (`apps/web/src/lib/agents/directory-concierge.ts`,
+  `askDirectoryConcierge`) is the first agent in this app that's genuinely public — no
+  `requireSession()` anywhere in its path, unlike the portal's student-support chat it's
+  otherwise modeled on: same multi-turn shape (prior turns passed as plain-text `history`),
+  same one deliberately-simple substring-search read tool
+  (`search_listings`, scoped to `directoryId` + `PUBLISHED`, no vector search/embeddings — same
+  accepted approach as `search_course_content`). The Server Action
+  (`apps/web/src/app/t/[tenantSlug]/directory/chat-actions.ts`) re-derives `directoryId` from
+  `tenantSlug` server-side rather than trusting a client-supplied id, matching the lesson chat
+  action's defense-in-depth reasoning even though there's no auth check to bypass here — a
+  Server Action is invocable directly regardless.
+- **Claim + upgrade payment flow**: "Claim this listing" requires a session (an anonymous
+  visitor is linked to `/login?redirectTo=<listing-path>` — reusing login's existing
+  `redirectTo` support from Phase 5) and calls `claimListingAction`
+  (`apps/web/src/app/t/[tenantSlug]/directory/listings/[listingSlug]/actions.ts`), which just
+  links `Listing.claimedByUserId`; claiming itself is free. Once claimed, the owner sees any
+  `LISTING_UPGRADE` `Product`s tied to that listing (created in the Stripe Dashboard with
+  metadata `type=LISTING_UPGRADE`, `listingId=<id>`, `tier=FEATURED|PREMIUM` — same
+  Dashboard-is-the-source-of-truth convention as course/membership products) and can buy one
+  via `upgradeListingAction`, which calls the exact same `createCheckoutSession` every other
+  purchase in this app uses — no new checkout path, just another `Product` on the listing's
+  own tenant's connected Stripe account. `handleCheckoutSessionCompleted`
+  (`lib/billing/webhook-handlers.ts`) now also checks `updated.listingId` and, if the paid
+  product carries a `listingTier`, calls `upgradeListingTier` — the same "webhook drives module
+  state" pattern a course purchase upserting an `Enrollment` already established.
+  **A known rough edge, deliberately not solved this phase**: a brand-new visitor with no
+  account yet who clicks "Claim" lands on `/login`, and from there `/signup` always redirects
+  to `/portal` afterward (not back to the listing) — reusing the funnel/product-specific
+  `signupAction` for a generic post-signup redirect would have bloated it with an unrelated
+  special case for one rare path (most claimants already have a portal account); revisit if
+  this friction turns out to matter in practice.
+- **Verified live**, not just unit-tested (`directories.ts`, `listings.ts`, and
+  `directory-concierge.ts` each have their own `.test.ts`, plus `webhook-handlers.test.ts`
+  extended for the listing-upgrade path): a full browser walkthrough against real Postgres —
+  browsed the seeded directory's category grid and a category page, searched for a listing by
+  name, viewed a `FEATURED` claimed listing's detail page, confirmed an anonymous visitor sees
+  "sign in to claim" on an unclaimed listing, created a real category and a real listing
+  through the actual admin forms and confirmed both appeared on the public storefront
+  immediately, claimed a previously-unclaimed listing as a signed-in customer and confirmed the
+  claim persisted in Postgres (`Listing.claimedByUserId` set, `claimedByUser.email` matching),
+  and exercised the concierge chat widget, receiving a genuine `401 invalid API key` response
+  from Anthropic's own servers — the same accepted "real request pipeline, missing key" proof
+  every other agent in this app has been verified with since Phase 6.
 
 ## Deploying to Railway
 

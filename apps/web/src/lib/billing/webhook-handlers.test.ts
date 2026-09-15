@@ -11,6 +11,7 @@ vi.mock("@platform/db", async () => {
       enrollment: { upsert: vi.fn(), updateMany: vi.fn() },
       deal: { findUnique: vi.fn() },
       contact: { findUnique: vi.fn() },
+      listing: { update: vi.fn() },
       pipelineStage: { findFirst: vi.fn() },
       activity: { create: vi.fn() },
       subscription: { upsert: vi.fn(), updateMany: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
@@ -59,12 +60,39 @@ describe("handleProductUpsert", () => {
 
     expect(prisma.product.upsert).toHaveBeenCalledWith({
       where: { stripeProductId: "prod_1" },
-      update: { name: "Founding Member", type: "MEMBERSHIP", courseId: null },
+      update: { name: "Founding Member", type: "MEMBERSHIP", courseId: null, listingId: null, listingTier: null },
       create: expect.objectContaining({
         tenantId: "tenant_1",
         stripeProductId: "prod_1",
         name: "Founding Member",
         type: "MEMBERSHIP",
+      }),
+    });
+  });
+
+  it("parses listingId/tier metadata for a LISTING_UPGRADE product", async () => {
+    await handleProductUpsert(
+      {
+        id: "prod_3",
+        name: "Featured Listing",
+        metadata: { type: "LISTING_UPGRADE", listingId: "listing_1", tier: "FEATURED" },
+      } as unknown as Stripe.Product,
+      "tenant_1",
+    );
+
+    expect(prisma.product.upsert).toHaveBeenCalledWith({
+      where: { stripeProductId: "prod_3" },
+      update: {
+        name: "Featured Listing",
+        type: "LISTING_UPGRADE",
+        courseId: null,
+        listingId: "listing_1",
+        listingTier: "FEATURED",
+      },
+      create: expect.objectContaining({
+        type: "LISTING_UPGRADE",
+        listingId: "listing_1",
+        listingTier: "FEATURED",
       }),
     });
   });
@@ -138,6 +166,7 @@ describe("handleCheckoutSessionCompleted", () => {
     expect(prisma.order.update).toHaveBeenCalledWith({
       where: { id: "order_1" },
       data: { status: "PAID", stripePaymentIntentId: "pi_1" },
+      include: { product: true },
     });
     expect(prisma.enrollment.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -145,6 +174,45 @@ describe("handleCheckoutSessionCompleted", () => {
         create: expect.objectContaining({ source: "STRIPE_PURCHASE" }),
       }),
     );
+  });
+
+  it("upgrades the listing's tier when the order is for a LISTING_UPGRADE product", async () => {
+    vi.mocked(prisma.order.findUnique).mockResolvedValue({ id: "order_listing" } as never);
+    vi.mocked(prisma.order.update).mockResolvedValue({
+      id: "order_listing",
+      userId: "user_1",
+      courseId: null,
+      dealId: null,
+      contactId: null,
+      listingId: "listing_1",
+      product: { listingTier: "FEATURED" },
+      amountCents: 1900,
+    } as never);
+
+    await handleCheckoutSessionCompleted({
+      id: "cs_listing",
+      payment_intent: "pi_listing",
+    } as unknown as Stripe.Checkout.Session);
+
+    expect(prisma.listing.update).toHaveBeenCalledWith({ where: { id: "listing_1" }, data: { tier: "FEATURED" } });
+  });
+
+  it("does not touch a listing when the order has no listingId", async () => {
+    vi.mocked(prisma.order.findUnique).mockResolvedValue({ id: "order_1" } as never);
+    vi.mocked(prisma.order.update).mockResolvedValue({
+      id: "order_1",
+      userId: "user_1",
+      courseId: "course_1",
+      dealId: null,
+      contactId: null,
+      listingId: null,
+      product: null,
+      amountCents: 9900,
+    } as never);
+
+    await handleCheckoutSessionCompleted({ id: "cs_1", payment_intent: "pi_1" } as unknown as Stripe.Checkout.Session);
+
+    expect(prisma.listing.update).not.toHaveBeenCalled();
   });
 
   it("closes the linked deal as won when the order is tied to a CRM deal", async () => {
