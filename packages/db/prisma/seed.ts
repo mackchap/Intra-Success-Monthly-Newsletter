@@ -230,6 +230,7 @@ async function main() {
     update: {},
     create: {
       id: "seed-course-intra",
+      tenantId: tenant.id,
       title: "Intrapreneurship Fundamentals",
       slug: "intrapreneurship-fundamentals",
       description: "A sample course seeded for local Stripe checkout testing.",
@@ -244,6 +245,7 @@ async function main() {
     update: {},
     create: {
       id: "seed-product-intra-course",
+      tenantId: tenant.id,
       name: course.title,
       type: "COURSE",
       priceCents: course.priceCents,
@@ -337,6 +339,7 @@ async function main() {
     update: {},
     create: {
       id: "seed-course-free",
+      tenantId: tenant.id,
       title: "Community Basics",
       slug: "community-basics",
       description: "A free sample course anyone can self-enroll in.",
@@ -371,6 +374,7 @@ async function main() {
     update: {},
     create: {
       id: "seed-course-membership",
+      tenantId: tenant.id,
       title: "Founding Member Vault",
       slug: "founding-member-vault",
       description: "Included with an active membership subscription.",
@@ -401,6 +405,7 @@ async function main() {
     update: {},
     create: {
       id: "seed-product-membership",
+      tenantId: tenant.id,
       name: "Founding Member",
       type: "MEMBERSHIP",
       priceCents: 2900,
@@ -418,6 +423,7 @@ async function main() {
     update: {},
     create: {
       id: "seed-funnel-guide",
+      tenantId: tenant.id,
       name: "Free Guide Funnel",
       slug: "free-guide",
       description: "Sample funnel seeded for local end-to-end testing.",
@@ -498,7 +504,98 @@ async function main() {
     },
   });
 
-  console.log(`Sample funnel ready: ${funnel.name} (/f/${funnel.slug}/start)`);
+  console.log(`Sample funnel ready: ${funnel.name} (/t/${tenant.slug}/f/${funnel.slug}/start)`);
+
+  // A sample local-business directory (Phase 10), with a couple of
+  // categories and a handful of listings — one claimed and FEATURED, so the
+  // storefront and concierge agent both have something real to exercise.
+  const directory = await prisma.directory.upsert({
+    where: { tenantId: tenant.id },
+    update: {},
+    create: {
+      tenantId: tenant.id,
+      name: "Main Street Business Directory",
+      description: "A directory of local businesses seeded for local end-to-end testing.",
+    },
+  });
+
+  const coffeeCategory = await prisma.directoryCategory.upsert({
+    where: { directoryId_slug: { directoryId: directory.id, slug: "coffee-cafes" } },
+    update: {},
+    create: { directoryId: directory.id, name: "Coffee & Cafes", slug: "coffee-cafes", order: 0 },
+  });
+  const restaurantsCategory = await prisma.directoryCategory.upsert({
+    where: { directoryId_slug: { directoryId: directory.id, slug: "restaurants" } },
+    update: {},
+    create: { directoryId: directory.id, name: "Restaurants", slug: "restaurants", order: 1 },
+  });
+  const servicesCategory = await prisma.directoryCategory.upsert({
+    where: { directoryId_slug: { directoryId: directory.id, slug: "professional-services" } },
+    update: {},
+    create: { directoryId: directory.id, name: "Professional Services", slug: "professional-services", order: 2 },
+  });
+
+  await prisma.listing.upsert({
+    where: { id: "seed-listing-daily-grind" },
+    update: {},
+    create: {
+      id: "seed-listing-daily-grind",
+      tenantId: tenant.id,
+      directoryId: directory.id,
+      categoryId: coffeeCategory.id,
+      name: "The Daily Grind",
+      slug: "the-daily-grind",
+      description: "A cozy neighborhood coffee shop with locally roasted beans and fresh pastries.",
+      address: "123 Main St",
+      city: "Springfield",
+      state: "IL",
+      phone: "555-0100",
+      tier: "FEATURED",
+      status: "PUBLISHED",
+      claimedByUserId: staff.id,
+      claimedAt: new Date(),
+    },
+  });
+
+  await prisma.listing.upsert({
+    where: { id: "seed-listing-joes-diner" },
+    update: {},
+    create: {
+      id: "seed-listing-joes-diner",
+      tenantId: tenant.id,
+      directoryId: directory.id,
+      categoryId: restaurantsCategory.id,
+      name: "Joe's Diner",
+      slug: "joes-diner",
+      description: "Classic American diner food — burgers, milkshakes, and all-day breakfast.",
+      address: "456 Elm St",
+      city: "Springfield",
+      state: "IL",
+      phone: "555-0101",
+      status: "PUBLISHED",
+    },
+  });
+
+  await prisma.listing.upsert({
+    where: { id: "seed-listing-main-street-law" },
+    update: {},
+    create: {
+      id: "seed-listing-main-street-law",
+      tenantId: tenant.id,
+      directoryId: directory.id,
+      categoryId: servicesCategory.id,
+      name: "Main Street Law Office",
+      slug: "main-street-law-office",
+      description: "General practice attorneys serving small businesses and families.",
+      address: "789 Oak Ave",
+      city: "Springfield",
+      state: "IL",
+      website: "https://example.com",
+      status: "PUBLISHED",
+    },
+  });
+
+  console.log(`Sample directory ready: ${directory.name} (/t/${tenant.slug}/directory)`);
 }
 
 main()

@@ -1,13 +1,21 @@
 import { prisma, MessageChannel, SequenceTrigger } from "@platform/db";
 
 export interface CreateSequenceInput {
+  tenantId: string;
   name: string;
   trigger: SequenceTrigger;
   funnelId?: string;
 }
 
 export async function createSequence(input: CreateSequenceInput) {
-  return prisma.sequence.create({ data: input });
+  return prisma.sequence.create({
+    data: {
+      tenantId: input.tenantId,
+      name: input.name,
+      trigger: input.trigger,
+      funnelId: input.funnelId,
+    },
+  });
 }
 
 export async function setSequenceActive(sequenceId: string, active: boolean) {

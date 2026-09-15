@@ -16,9 +16,9 @@ const GET_OWN_PERFORMANCE_TOOL: AgentTool = {
   input_schema: { type: "object", properties: {} },
 };
 
-async function getOwnPerformanceSummary() {
+async function getOwnPerformanceSummary(tenantId: string) {
   const posts = await prisma.socialPost.findMany({
-    where: { status: SocialPostStatus.PUBLISHED },
+    where: { status: SocialPostStatus.PUBLISHED, socialAccount: { tenantId } },
     orderBy: { publishedAt: "desc" },
     take: 20,
     include: { insights: { orderBy: { capturedAt: "desc" }, take: 1 }, socialAccount: true },
@@ -42,7 +42,7 @@ async function getOwnPerformanceSummary() {
 
 // Read-only: no write tool, matching this agent's advisory-only role (same
 // pattern as the funnel optimizer agent).
-export async function getMarketingRecommendations(): Promise<string> {
+export async function getMarketingRecommendations(tenantId: string): Promise<string> {
   const result = await runAgentWithTools({
     system: SYSTEM_PROMPT,
     userMessage: "Review our recent social performance and what's currently working elsewhere, then give me your top recommendations.",
@@ -51,7 +51,7 @@ export async function getMarketingRecommendations(): Promise<string> {
     maxTurns: 5,
     executeTool: async (name) => {
       if (name !== "get_own_performance") throw new Error(`Unknown tool: ${name}`);
-      return getOwnPerformanceSummary();
+      return getOwnPerformanceSummary(tenantId);
     },
   });
 

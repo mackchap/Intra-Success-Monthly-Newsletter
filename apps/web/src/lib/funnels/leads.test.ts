@@ -23,10 +23,6 @@ vi.mock("@/lib/queues/lead-qualification", () => ({
   enqueueLeadQualification: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/lib/accounts/legacy-tenant", () => ({
-  getLegacyTenantId: vi.fn().mockResolvedValue("tenant-1"),
-}));
-
 import { prisma } from "@platform/db";
 import { enqueueFunnelSubmissionTrigger } from "@/lib/queues/sequence-triggers";
 import { enqueueLeadQualification } from "@/lib/queues/lead-qualification";
@@ -35,6 +31,10 @@ import { ValidationError } from "@/lib/crm/errors";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(prisma.funnel.findUniqueOrThrow).mockResolvedValue({
+    tenantId: "tenant-1",
+    name: "Webinar Funnel",
+  } as never);
 });
 
 describe("captureLead", () => {
@@ -53,7 +53,6 @@ describe("captureLead", () => {
       id: "pipeline_1",
       stages: [{ id: "stage_lead" }],
     } as never);
-    vi.mocked(prisma.funnel.findUniqueOrThrow).mockResolvedValue({ id: "funnel_1", name: "Webinar Funnel" } as never);
     vi.mocked(prisma.deal.create).mockResolvedValue({ id: "deal_1" } as never);
 
     const result = await captureLead({

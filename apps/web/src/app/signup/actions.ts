@@ -20,7 +20,12 @@ export async function signupAction(formData: FormData) {
     throw new Error("Email and password are required.");
   }
 
-  const user = await createUserAccount({ email, password, name });
+  const funnelId = str(formData, "funnelId");
+  const tenantId = funnelId
+    ? (await prisma.funnel.findUnique({ where: { id: funnelId }, select: { tenantId: true } }))?.tenantId
+    : undefined;
+
+  const user = await createUserAccount({ email, password, name, tenantId });
 
   try {
     await signIn("credentials", { email, password, redirect: false });
@@ -31,7 +36,6 @@ export async function signupAction(formData: FormData) {
   const productId = str(formData, "productId");
   if (productId) {
     const leadContactId = str(formData, "lead");
-    const funnelId = str(formData, "funnelId");
     const deal =
       leadContactId && funnelId
         ? await prisma.deal.findFirst({ where: { contactId: leadContactId, funnelId } })

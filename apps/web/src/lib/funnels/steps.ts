@@ -2,6 +2,7 @@ import { prisma, FunnelStepType } from "@platform/db";
 import { parseBlocks, type FunnelBlock } from "./blocks";
 
 export interface CreateFunnelInput {
+  tenantId: string;
   name: string;
   slug: string;
   description?: string;

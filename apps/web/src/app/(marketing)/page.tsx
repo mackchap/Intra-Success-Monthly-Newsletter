@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { prisma } from "@platform/db";
 import { formatMoney } from "@/lib/format";
+import { getLegacyTenantId, getLegacyTenantSlug } from "@/lib/accounts/legacy-tenant";
 
 export const dynamic = "force-dynamic";
 
@@ -20,8 +21,10 @@ const VALUE_PROPS = [
 ];
 
 export default async function HomePage() {
+  const tenantId = await getLegacyTenantId();
+  const tenantSlug = await getLegacyTenantSlug();
   const courses = await prisma.course.findMany({
-    where: { published: true },
+    where: { tenantId, published: true },
     orderBy: { createdAt: "desc" },
     take: 3,
   });
@@ -38,7 +41,7 @@ export default async function HomePage() {
           impact inside the organization you already work for.
         </p>
         <div className="flex gap-3">
-          <Link href="/courses" className="rounded-md bg-brand-600 px-5 py-3 font-medium text-white">
+          <Link href={`/t/${tenantSlug}/courses`} className="rounded-md bg-brand-600 px-5 py-3 font-medium text-white">
             Browse courses
           </Link>
           <Link href="/pricing" className="rounded-md border border-slate-300 px-5 py-3 font-medium">
@@ -65,7 +68,7 @@ export default async function HomePage() {
             {courses.map((course) => (
               <Link
                 key={course.id}
-                href={`/courses/${course.slug}`}
+                href={`/t/${tenantSlug}/courses/${course.slug}`}
                 className="flex flex-col gap-2 rounded-lg border border-slate-200 p-5 hover:border-brand-500"
               >
                 <h3 className="font-semibold">{course.title}</h3>

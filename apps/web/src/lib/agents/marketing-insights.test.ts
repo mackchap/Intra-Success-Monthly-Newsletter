@@ -51,8 +51,13 @@ describe("getMarketingRecommendations", () => {
       return { finalText: "Post more consistently on Fridays.", toolCalls: [] };
     });
 
-    const advice = await getMarketingRecommendations();
+    const advice = await getMarketingRecommendations("tenant_1");
 
+    expect(prisma.socialPost.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ socialAccount: { tenantId: "tenant_1" } }),
+      }),
+    );
     expect(advice).toBe("Post more consistently on Fridays.");
   });
 
@@ -64,13 +69,13 @@ describe("getMarketingRecommendations", () => {
       return { finalText: "Not enough data yet — publish a few posts first.", toolCalls: [] };
     });
 
-    await getMarketingRecommendations();
+    await getMarketingRecommendations("tenant_1");
   });
 
   it("gives the agent both the performance tool and web_search as a server tool, with no write tool", async () => {
     vi.mocked(runAgentWithTools).mockResolvedValue({ finalText: "advice", toolCalls: [] });
 
-    await getMarketingRecommendations();
+    await getMarketingRecommendations("tenant_1");
 
     const callArgs = vi.mocked(runAgentWithTools).mock.calls[0][0];
     expect(callArgs.tools).toHaveLength(1);
@@ -82,7 +87,7 @@ describe("getMarketingRecommendations", () => {
   it("falls back to a friendly message when the agent produces no text", async () => {
     vi.mocked(runAgentWithTools).mockResolvedValue({ finalText: "", toolCalls: [] });
 
-    const advice = await getMarketingRecommendations();
+    const advice = await getMarketingRecommendations("tenant_1");
 
     expect(advice).toBe("Not enough data yet to make a confident recommendation.");
   });
@@ -93,6 +98,6 @@ describe("getMarketingRecommendations", () => {
       return { finalText: "ok", toolCalls: [] };
     });
 
-    await getMarketingRecommendations();
+    await getMarketingRecommendations("tenant_1");
   });
 });

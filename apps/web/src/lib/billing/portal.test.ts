@@ -5,7 +5,8 @@ vi.mock("@platform/db", async () => {
   return {
     ...actual,
     prisma: {
-      user: { findUniqueOrThrow: vi.fn() },
+      tenant: { findUniqueOrThrow: vi.fn() },
+      tenantCustomer: { findUnique: vi.fn() },
     },
   };
 });
@@ -24,30 +25,41 @@ import { ValidationError } from "@/lib/crm/errors";
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.APP_URL = "https://example.test";
+  vi.mocked(prisma.tenant.findUniqueOrThrow).mockResolvedValue({
+    id: "tenant_1",
+    stripeConnectAccountId: "acct_1",
+  } as never);
 });
 
 describe("createBillingPortalSession", () => {
-  it("throws if the user has no Stripe customer yet", async () => {
-    vi.mocked(prisma.user.findUniqueOrThrow).mockResolvedValue({ id: "user_1", stripeCustomerId: null } as never);
+  it("throws if the user has no Stripe customer with this tenant yet", async () => {
+    vi.mocked(prisma.tenantCustomer.findUnique).mockResolvedValue(null);
 
-    await expect(createBillingPortalSession("user_1")).rejects.toThrow(ValidationError);
+    await expect(createBillingPortalSession("tenant_1", "user_1")).rejects.toThrow(ValidationError);
   });
 
-  it("creates a portal session for the user's Stripe customer", async () => {
-    vi.mocked(prisma.user.findUniqueOrThrow).mockResolvedValue({
-      id: "user_1",
-      stripeCustomerId: "cus_1",
+  it("throws if the tenant hasn't connected Stripe yet", async () => {
+    vi.mocked(prisma.tenantCustomer.findUnique).mockResolvedValue({ stripeCustomerId: "cus_1" } as never);
+    vi.mocked(prisma.tenant.findUniqueOrThrow).mockResolvedValue({
+      id: "tenant_1",
+      stripeConnectAccountId: null,
     } as never);
+
+    await expect(createBillingPortalSession("tenant_1", "user_1")).rejects.toThrow(ValidationError);
+  });
+
+  it("creates a portal session on the tenant's connected account for the user's Stripe customer", async () => {
+    vi.mocked(prisma.tenantCustomer.findUnique).mockResolvedValue({ stripeCustomerId: "cus_1" } as never);
     vi.mocked(stripe.billingPortal.sessions.create).mockResolvedValue({
       url: "https://billing.stripe.com/session/1",
     } as never);
 
-    const url = await createBillingPortalSession("user_1");
+    const url = await createBillingPortalSession("tenant_1", "user_1");
 
-    expect(stripe.billingPortal.sessions.create).toHaveBeenCalledWith({
-      customer: "cus_1",
-      return_url: "https://example.test/portal",
-    });
+    expect(stripe.billingPortal.sessions.create).toHaveBeenCalledWith(
+      { customer: "cus_1", return_url: "https://example.test/portal" },
+      { stripeAccount: "acct_1" },
+    );
     expect(url).toBe("https://billing.stripe.com/session/1");
   });
 });

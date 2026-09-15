@@ -16,19 +16,24 @@ export default auth((req) => {
   const { nextUrl } = req;
   const isPlatformAdmin = req.auth?.user?.isPlatformAdmin ?? false;
 
-  // Legacy, not-yet-tenant-scoped surfaces (Academy/Funnels/Marketing/
-  // Products/Sequences) — gated by isPlatformAdmin until Phase 9 moves them
-  // onto Tenant/Membership too. See CLAUDE.md's Phase 8 section.
+  // Legacy, not-yet-tenant-scoped surfaces — shrinking each phase (Phase 9
+  // moved Funnels/Academy/Marketing/Products/Sequences off this bare
+  // `/admin` path onto `/a/[tenantId]/admin/*` below; whatever's still here
+  // stays gated by isPlatformAdmin). See CLAUDE.md's Phase 8/9 sections.
   const isAdminRoute = nextUrl.pathname.startsWith("/admin");
-  // Tenant-scoped CRM. Middleware can only confirm *a* session exists here —
-  // it can't reach Prisma from the Edge runtime to check which Tenant(s)
-  // that session belongs to, so the real per-tenant membership/role check
-  // happens in requireAccountRole() inside the page/action itself (defense
-  // in depth, same split every other route already uses).
+  // Tenant-scoped surfaces (CRM under /a/[tenantId]/staff, tenant admin
+  // under /a/[tenantId]/admin). Middleware can only confirm *a* session
+  // exists here — it can't reach Prisma from the Edge runtime to check
+  // which Tenant(s) that session belongs to, so the real per-tenant
+  // membership/role check happens in requireAccountRole() inside the
+  // page/action itself (defense in depth, same split every other route
+  // already uses).
   const isAccountRoute = nextUrl.pathname.startsWith("/a/");
   const isPlatformAdminRoute = nextUrl.pathname.startsWith("/platform-admin");
   const isPortalRoute = nextUrl.pathname.startsWith("/portal");
-  const isFunnelRoute = nextUrl.pathname.startsWith("/f/");
+  // Public, tenant-scoped storefront pages (funnels today; courses/products
+  // as Phase 9 lands them) — no auth, just the anonymous visit-session cookie.
+  const isFunnelRoute = /^\/t\/[^/]+\/f\//.test(nextUrl.pathname);
   // Authenticated-only, not tenant-specific: the account switcher and the
   // "start a new business" onboarding flow.
   const isAccountsMetaRoute = nextUrl.pathname.startsWith("/accounts") || nextUrl.pathname.startsWith("/start");
@@ -77,7 +82,7 @@ export const config = {
     "/a/:path*",
     "/platform-admin/:path*",
     "/portal/:path*",
-    "/f/:path*",
+    "/t/:path*",
     "/accounts/:path*",
     "/start/:path*",
   ],

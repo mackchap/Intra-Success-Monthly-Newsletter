@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { getMarketingRecommendationsAction } from "@/app/admin/marketing/actions";
+import { getMarketingRecommendationsAction } from "@/app/a/[tenantId]/admin/marketing/actions";
 
-export function InsightsAdvice() {
+export function InsightsAdvice({ tenantId }: { tenantId: string }) {
   const [advice, setAdvice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -12,7 +12,7 @@ export function InsightsAdvice() {
     setLoading(true);
     setError(null);
     try {
-      const result = await getMarketingRecommendationsAction();
+      const result = await getMarketingRecommendationsAction(tenantId);
       setAdvice(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to get recommendations.");

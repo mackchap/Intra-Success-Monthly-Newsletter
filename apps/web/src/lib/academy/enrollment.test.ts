@@ -55,19 +55,28 @@ describe("enrollViaMembership", () => {
   });
 
   it("rejects a user with no active/trialing subscription", async () => {
-    vi.mocked(prisma.course.findUniqueOrThrow).mockResolvedValue({ priceType: "MEMBERSHIP" } as never);
+    vi.mocked(prisma.course.findUniqueOrThrow).mockResolvedValue({
+      priceType: "MEMBERSHIP",
+      tenantId: "tenant_1",
+    } as never);
     vi.mocked(prisma.subscription.findFirst).mockResolvedValue(null);
 
     await expect(enrollViaMembership("user_1", "course_1")).rejects.toThrow(ValidationError);
     expect(prisma.enrollment.upsert).not.toHaveBeenCalled();
   });
 
-  it("enrolls with source MEMBERSHIP when the user has an active subscription", async () => {
-    vi.mocked(prisma.course.findUniqueOrThrow).mockResolvedValue({ priceType: "MEMBERSHIP" } as never);
+  it("enrolls with source MEMBERSHIP when the user has an active subscription in the course's own tenant", async () => {
+    vi.mocked(prisma.course.findUniqueOrThrow).mockResolvedValue({
+      priceType: "MEMBERSHIP",
+      tenantId: "tenant_1",
+    } as never);
     vi.mocked(prisma.subscription.findFirst).mockResolvedValue({ id: "sub_1" } as never);
 
     await enrollViaMembership("user_1", "course_1");
 
+    expect(prisma.subscription.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ tenantId: "tenant_1" }) }),
+    );
     expect(prisma.enrollment.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ create: expect.objectContaining({ source: "MEMBERSHIP" }) }),
     );
@@ -85,11 +94,11 @@ describe("grantManualEnrollment", () => {
 });
 
 describe("revokeMembershipEnrollments", () => {
-  it("revokes only active MEMBERSHIP-sourced enrollments for the user", async () => {
-    await revokeMembershipEnrollments("user_1");
+  it("revokes only active MEMBERSHIP-sourced enrollments for the user in the given tenant", async () => {
+    await revokeMembershipEnrollments("user_1", "tenant_1");
 
     expect(prisma.enrollment.updateMany).toHaveBeenCalledWith({
-      where: { userId: "user_1", source: "MEMBERSHIP", status: "ACTIVE" },
+      where: { userId: "user_1", source: "MEMBERSHIP", status: "ACTIVE", course: { tenantId: "tenant_1" } },
       data: { status: "REVOKED", revokedAt: expect.any(Date) },
     });
   });

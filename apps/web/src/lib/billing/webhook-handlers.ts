@@ -5,6 +5,7 @@ import {
   DealStatus,
   EnrollmentStatus,
   EnrollmentSource,
+  ListingTier,
   OrderStatus,
   ProductType,
   StripeConnectStatus,
@@ -12,6 +13,7 @@ import {
 } from "@platform/db";
 import { moveDealStage } from "@/lib/crm/deals";
 import { revokeMembershipEnrollments } from "@/lib/academy/enrollment";
+import { upgradeListingTier } from "@/lib/directory/listings";
 import {
   handlePlatformCheckoutCompleted,
   handlePlatformSubscriptionDeleted,
@@ -23,35 +25,55 @@ import {
 // for sale; we mirror it here rather than managing a separate catalog. App-
 // specific fields (which ProductType, which Course it grants) travel as
 // Stripe Product metadata (metadata.type, metadata.courseId), set when the
-// product is created in Stripe.
+// product is created in Stripe. Since Phase 9, these always arrive as Connect
+// events (`event.account` set) — a tenant's own connected Stripe account —
+// resolved to a tenantId by processStripeWebhookEvent before dispatch.
 // ---------------------------------------------------------------------------
 
 function parseProductType(value: string | undefined): ProductType {
-  if (value === ProductType.COURSE || value === ProductType.FUNNEL_OFFER || value === ProductType.MEMBERSHIP) {
+  if (
+    value === ProductType.COURSE ||
+    value === ProductType.FUNNEL_OFFER ||
+    value === ProductType.MEMBERSHIP ||
+    value === ProductType.LISTING_UPGRADE
+  ) {
     return value;
   }
   return ProductType.FUNNEL_OFFER;
 }
 
-export async function handleProductUpsert(product: Stripe.Product) {
+function parseListingTier(value: string | undefined): ListingTier | null {
+  if (value === ListingTier.FEATURED || value === ListingTier.PREMIUM) return value;
+  return null;
+}
+
+export async function handleProductUpsert(product: Stripe.Product, tenantId: string) {
   const type = parseProductType(product.metadata?.type);
   const courseId = product.metadata?.courseId || null;
+  // Only meaningful for LISTING_UPGRADE — which listing this purchase
+  // upgrades, and which tier it grants (a directory can sell more than one
+  // tier, e.g. Featured vs. Premium, at different prices).
+  const listingId = type === ProductType.LISTING_UPGRADE ? product.metadata?.listingId || null : null;
+  const listingTier = type === ProductType.LISTING_UPGRADE ? parseListingTier(product.metadata?.tier) : null;
 
   await prisma.product.upsert({
     where: { stripeProductId: product.id },
-    update: { name: product.name, type, courseId },
+    update: { name: product.name, type, courseId, listingId, listingTier },
     create: {
+      tenantId,
       stripeProductId: product.id,
       name: product.name,
       type,
       courseId,
+      listingId,
+      listingTier,
       priceCents: 0,
       currency: "usd",
     },
   });
 }
 
-export async function handlePriceUpsert(price: Stripe.Price) {
+export async function handlePriceUpsert(price: Stripe.Price, tenantId: string) {
   if (typeof price.product !== "string" || price.unit_amount == null) {
     // Expanded product object or a non-fixed (e.g. metered/tiered) price —
     // out of scope for Phase 3's one-time/flat-subscription pricing.
@@ -62,6 +84,7 @@ export async function handlePriceUpsert(price: Stripe.Price) {
     where: { stripeProductId: price.product },
     update: { stripePriceId: price.id, priceCents: price.unit_amount, currency: price.currency },
     create: {
+      tenantId,
       stripeProductId: price.product,
       stripePriceId: price.id,
       priceCents: price.unit_amount,
@@ -109,7 +132,12 @@ export async function handleCheckoutSessionCompleted(session: Stripe.Checkout.Se
       stripePaymentIntentId:
         typeof session.payment_intent === "string" ? session.payment_intent : undefined,
     },
+    include: { product: true },
   });
+
+  if (updated.listingId && updated.product?.listingTier) {
+    await upgradeListingTier(updated.listingId, updated.product.listingTier);
+  }
 
   if (updated.courseId && updated.userId) {
     await prisma.enrollment.upsert({
@@ -172,7 +200,11 @@ export async function handleChargeRefunded(charge: Stripe.Charge) {
 }
 
 // ---------------------------------------------------------------------------
-// Subscriptions / memberships
+// Subscriptions / memberships — a tenant's own customer subscribing to that
+// tenant's membership product. Always a Connect event (Phase 9); the
+// customer is looked up via TenantCustomer (a Stripe Customer id is only
+// meaningful within one specific connected account), not the old global
+// User.stripeCustomerId.
 // ---------------------------------------------------------------------------
 
 function mapSubscriptionStatus(status: Stripe.Subscription.Status): SubscriptionStatus {
@@ -194,13 +226,13 @@ function mapSubscriptionStatus(status: Stripe.Subscription.Status): Subscription
   }
 }
 
-export async function handleSubscriptionUpsert(subscription: Stripe.Subscription) {
+export async function handleSubscriptionUpsert(subscription: Stripe.Subscription, tenantId: string) {
   const customerId =
     typeof subscription.customer === "string" ? subscription.customer : subscription.customer.id;
 
-  const user = await prisma.user.findUnique({ where: { stripeCustomerId: customerId } });
-  if (!user) {
-    console.warn(`No user found for Stripe customer ${customerId}`);
+  const tenantCustomer = await prisma.tenantCustomer.findFirst({ where: { tenantId, stripeCustomerId: customerId } });
+  if (!tenantCustomer) {
+    console.warn(`No TenantCustomer found for tenant ${tenantId} / Stripe customer ${customerId}`);
     return;
   }
 
@@ -217,9 +249,10 @@ export async function handleSubscriptionUpsert(subscription: Stripe.Subscription
       cancelAtPeriodEnd: subscription.cancel_at_period_end,
     },
     create: {
+      tenantId,
       stripeSubscriptionId: subscription.id,
       stripeCustomerId: customerId,
-      userId: user.id,
+      userId: tenantCustomer.userId,
       status: mapSubscriptionStatus(subscription.status),
       plan,
       currentPeriodEnd,
@@ -228,7 +261,7 @@ export async function handleSubscriptionUpsert(subscription: Stripe.Subscription
   });
 }
 
-export async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
+export async function handleSubscriptionDeleted(subscription: Stripe.Subscription, tenantId: string) {
   const existing = await prisma.subscription.findUnique({
     where: { stripeSubscriptionId: subscription.id },
   });
@@ -242,7 +275,10 @@ export async function handleSubscriptionDeleted(subscription: Stripe.Subscriptio
   // A MEMBERSHIP-tier course's access is only as good as the subscription
   // that granted it — unlike a one-time STRIPE_PURCHASE enrollment, which
   // stays ACTIVE regardless of later subscription changes. (Phase 4.)
-  await revokeMembershipEnrollments(existing.userId);
+  // Scoped to this tenant only (Phase 9) — canceling a subscription with
+  // Tenant A must never revoke a membership course the user separately has
+  // through Tenant B.
+  await revokeMembershipEnrollments(existing.userId, tenantId);
 }
 
 // ---------------------------------------------------------------------------
@@ -284,18 +320,28 @@ export async function processStripeWebhookEvent(event: Stripe.Event) {
     });
   }
 
+  // Connect events carry `event.account` (the tenant's connected account) —
+  // everything tenant-owned (products, prices, a tenant's own customer
+  // orders/subscriptions) only ever arrives this way since Phase 9. An event
+  // with no `account` is the platform's own Stripe account (platform
+  // subscriptions, Connect account.updated notifications).
+  const tenantId = event.account
+    ? (await prisma.tenant.findUnique({ where: { stripeConnectAccountId: event.account }, select: { id: true } }))
+        ?.id
+    : undefined;
+
   switch (event.type) {
     case "product.created":
     case "product.updated":
-      await handleProductUpsert(event.data.object as Stripe.Product);
+      if (tenantId) await handleProductUpsert(event.data.object as Stripe.Product, tenantId);
       break;
     case "price.created":
     case "price.updated":
-      await handlePriceUpsert(event.data.object as Stripe.Price);
+      if (tenantId) await handlePriceUpsert(event.data.object as Stripe.Price, tenantId);
       break;
     case "checkout.session.completed": {
       const session = event.data.object as Stripe.Checkout.Session;
-      if (session.metadata?.kind === "platform_subscription") {
+      if (!event.account && session.metadata?.kind === "platform_subscription") {
         await handlePlatformCheckoutCompleted(session);
       } else {
         await handleCheckoutSessionCompleted(session);
@@ -307,15 +353,18 @@ export async function processStripeWebhookEvent(event: Stripe.Event) {
       break;
     case "customer.subscription.created":
     case "customer.subscription.updated":
-      // Two independent, non-overlapping customer namespaces on the same
-      // Stripe account (a tenant's own customer vs. the tenant itself) — each
-      // handler no-ops if the event's customer id isn't theirs.
-      await handleSubscriptionUpsert(event.data.object as Stripe.Subscription);
-      await handlePlatformSubscriptionUpsert(event.data.object as Stripe.Subscription);
+      if (tenantId) {
+        await handleSubscriptionUpsert(event.data.object as Stripe.Subscription, tenantId);
+      } else {
+        await handlePlatformSubscriptionUpsert(event.data.object as Stripe.Subscription);
+      }
       break;
     case "customer.subscription.deleted":
-      await handleSubscriptionDeleted(event.data.object as Stripe.Subscription);
-      await handlePlatformSubscriptionDeleted(event.data.object as Stripe.Subscription);
+      if (tenantId) {
+        await handleSubscriptionDeleted(event.data.object as Stripe.Subscription, tenantId);
+      } else {
+        await handlePlatformSubscriptionDeleted(event.data.object as Stripe.Subscription);
+      }
       break;
     case "account.updated":
       // Only ever fires for a connected (Tenant) account, never the

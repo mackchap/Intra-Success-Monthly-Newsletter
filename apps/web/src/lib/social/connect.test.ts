@@ -5,7 +5,7 @@ vi.mock("@platform/db", async () => {
   return {
     ...actual,
     prisma: {
-      socialAccount: { upsert: vi.fn() },
+      socialAccount: { upsert: vi.fn(), findUnique: vi.fn() },
     },
   };
 });
@@ -23,9 +23,11 @@ vi.mock("./meta", () => ({
 import { prisma } from "@platform/db";
 import { exchangeCodeForUserToken, exchangeForLongLivedToken, listManagedPages } from "./meta";
 import { connectMetaAccounts } from "./connect";
+import { ValidationError } from "@/lib/crm/errors";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(prisma.socialAccount.findUnique).mockResolvedValue(null);
 });
 
 describe("connectMetaAccounts", () => {
@@ -38,6 +40,7 @@ describe("connectMetaAccounts", () => {
     ]);
 
     const result = await connectMetaAccounts({
+      tenantId: "tenant_1",
       code: "auth_code",
       redirectUri: "https://example.com/callback",
       connectedByUserId: "user_1",
@@ -50,13 +53,21 @@ describe("connectMetaAccounts", () => {
     expect(prisma.socialAccount.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { platform_externalId: { platform: "FACEBOOK", externalId: "page_1" } },
-        create: expect.objectContaining({ displayName: "My Page", accessTokenEncrypted: "encrypted(page_token_1)" }),
+        create: expect.objectContaining({
+          tenantId: "tenant_1",
+          displayName: "My Page",
+          accessTokenEncrypted: "encrypted(page_token_1)",
+        }),
       }),
     );
     expect(prisma.socialAccount.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { platform_externalId: { platform: "INSTAGRAM", externalId: "ig_1" } },
-        create: expect.objectContaining({ displayName: "My Page (Instagram)", accessTokenEncrypted: "encrypted(page_token_1)" }),
+        create: expect.objectContaining({
+          tenantId: "tenant_1",
+          displayName: "My Page (Instagram)",
+          accessTokenEncrypted: "encrypted(page_token_1)",
+        }),
       }),
     );
     expect(prisma.socialAccount.upsert).toHaveBeenCalledWith(
@@ -74,9 +85,33 @@ describe("connectMetaAccounts", () => {
     vi.mocked(exchangeForLongLivedToken).mockResolvedValue({ accessToken: "long", expiresIn: 5184000 });
     vi.mocked(listManagedPages).mockResolvedValue([]);
 
-    const result = await connectMetaAccounts({ code: "c", redirectUri: "https://x.com", connectedByUserId: "u1" });
+    const result = await connectMetaAccounts({
+      tenantId: "tenant_1",
+      code: "c",
+      redirectUri: "https://x.com",
+      connectedByUserId: "u1",
+    });
 
     expect(result).toEqual({ connectedPages: 0 });
+    expect(prisma.socialAccount.upsert).not.toHaveBeenCalled();
+  });
+
+  it("refuses to reconnect a page that already belongs to a different tenant", async () => {
+    vi.mocked(exchangeCodeForUserToken).mockResolvedValue({ accessToken: "short", expiresIn: 3600 });
+    vi.mocked(exchangeForLongLivedToken).mockResolvedValue({ accessToken: "long", expiresIn: 5184000 });
+    vi.mocked(listManagedPages).mockResolvedValue([
+      { id: "page_1", name: "My Page", accessToken: "page_token_1" },
+    ]);
+    vi.mocked(prisma.socialAccount.findUnique).mockResolvedValue({ tenantId: "tenant_other" } as never);
+
+    await expect(
+      connectMetaAccounts({
+        tenantId: "tenant_1",
+        code: "auth_code",
+        redirectUri: "https://example.com/callback",
+        connectedByUserId: "user_1",
+      }),
+    ).rejects.toThrow(ValidationError);
     expect(prisma.socialAccount.upsert).not.toHaveBeenCalled();
   });
 });

@@ -29,8 +29,14 @@ export async function enrollViaMembership(userId: string, courseId: string) {
     throw new ValidationError("This course doesn't require a membership.");
   }
 
+  // Scoped to the course's own tenant — a subscription with Tenant A must
+  // never grant access to Tenant B's membership course.
   const activeSubscription = await prisma.subscription.findFirst({
-    where: { userId, status: { in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING] } },
+    where: {
+      userId,
+      tenantId: course.tenantId,
+      status: { in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING] },
+    },
   });
   if (!activeSubscription) {
     throw new ValidationError("An active membership subscription is required for this course.");
@@ -54,13 +60,17 @@ export async function grantManualEnrollment(userId: string, courseId: string) {
 // Called when a membership subscription is canceled (Stripe webhook) — a
 // MEMBERSHIP-tier course's access is only as good as the subscription that
 // granted it, unlike a one-time STRIPE_PURCHASE enrollment which stays
-// ACTIVE regardless of any later subscription changes.
-export async function revokeMembershipEnrollments(userId: string) {
+// ACTIVE regardless of any later subscription changes. Scoped to the
+// canceled subscription's own tenant — a Tenant A subscription cancellation
+// must never revoke a Tenant B membership course the same user separately
+// has access to.
+export async function revokeMembershipEnrollments(userId: string, tenantId: string) {
   await prisma.enrollment.updateMany({
     where: {
       userId,
       source: EnrollmentSource.MEMBERSHIP,
       status: EnrollmentStatus.ACTIVE,
+      course: { tenantId },
     },
     data: { status: EnrollmentStatus.REVOKED, revokedAt: new Date() },
   });

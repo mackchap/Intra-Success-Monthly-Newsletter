@@ -27,16 +27,15 @@ datasource db {
 // =============================================================================
 
 model User {
-  id               String    @id @default(cuid())
-  name             String?
-  email            String?   @unique
-  emailVerified    DateTime?
-  image            String?
-  password         String? // bcrypt hash; null for OAuth-only users
-  isPlatformAdmin  Boolean   @default(false)
-  stripeCustomerId String?   @unique
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  id              String    @id @default(cuid())
+  name            String?
+  email           String?   @unique
+  emailVerified   DateTime?
+  image           String?
+  password        String? // bcrypt hash; null for OAuth-only users
+  isPlatformAdmin Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   accounts    Account[]
   sessions    Session[]
@@ -58,13 +57,17 @@ model User {
   certificates   Certificate[]
 
   // Orders / billing
-  orders        Order[]
-  subscriptions Subscription[]
+  orders          Order[]
+  subscriptions   Subscription[]
+  tenantCustomers TenantCustomer[]
 
   // Marketing
   connectedSocialAccounts SocialAccount[]
   createdCampaigns        Campaign[]
   approvedSocialPosts     SocialPost[]
+
+  // Directory (Phase 10)
+  claimedListings Listing[]
 
   @@index([isPlatformAdmin])
 }
@@ -133,6 +136,21 @@ model Tenant {
   tasks      Task[]
   notes      Note[]
   activities Activity[]
+
+  // Phase 9
+  funnels         Funnel[]
+  sequences       Sequence[]
+  courses         Course[]
+  products        Product[]
+  orders          Order[]
+  subscriptions   Subscription[]
+  tenantCustomers TenantCustomer[]
+  socialAccounts  SocialAccount[]
+  campaigns       Campaign[]
+
+  // Phase 10
+  directory Directory?
+  listings  Listing[]
 
   @@index([slug])
 }
@@ -480,11 +498,14 @@ enum FunnelStepType {
 model Funnel {
   id          String       @id @default(cuid())
   name        String
-  slug        String       @unique
+  slug        String
   description String?
   status      FunnelStatus @default(DRAFT)
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   steps       FunnelStep[]
   deals       Deal[]
@@ -492,6 +513,11 @@ model Funnel {
   submissions FunnelSubmission[]
   sequences   Sequence[]
   orders      Order[]
+
+  // Slugs are only unique per tenant now (Phase 9) — public funnel URLs are
+  // tenant-scoped (`/t/[tenantSlug]/f/[funnelSlug]/...`), so two tenants can
+  // each have their own "free-guide" funnel.
+  @@unique([tenantId, slug])
 }
 
 // A step IS a page: its `content` holds the builder's page JSON (blocks/layout).
@@ -572,12 +598,16 @@ model Sequence {
   active    Boolean         @default(true)
   createdAt DateTime        @default(now())
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   funnelId String?
   funnel   Funnel? @relation(fields: [funnelId], references: [id])
 
   steps       SequenceStep[]
   enrollments SequenceEnrollment[]
 
+  @@index([tenantId])
   @@index([funnelId])
 }
 
@@ -666,7 +696,7 @@ enum CoursePriceType {
 model Course {
   id              String          @id @default(cuid())
   title           String
-  slug            String          @unique
+  slug            String
   description     String?         @db.Text
   priceType       CoursePriceType @default(PAID)
   priceCents      Int             @default(0)
@@ -675,6 +705,9 @@ model Course {
   stripePriceId   String?
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   modules      Module[]
   enrollments  Enrollment[]
@@ -685,7 +718,10 @@ model Course {
   prerequisites Course[] @relation("CoursePrerequisites")
   requiredFor   Course[] @relation("CoursePrerequisites")
 
-  @@index([published])
+  // Slugs are only unique per tenant now (Phase 9) — public course URLs are
+  // tenant-scoped (`/t/[tenantSlug]/courses/[slug]`).
+  @@unique([tenantId, slug])
+  @@index([tenantId, published])
 }
 
 model Module {
@@ -835,6 +871,7 @@ enum ProductType {
   COURSE
   FUNNEL_OFFER
   MEMBERSHIP
+  LISTING_UPGRADE
 }
 
 model Product {
@@ -847,15 +884,31 @@ model Product {
   // Dashboard or API) and synced in here via product.*/price.* webhooks —
   // see apps/web/src/lib/billing/webhook-handlers.ts. `type` and `courseId`
   // come from the Stripe Product's metadata (metadata.type, metadata.courseId).
+  // Since Phase 9, these events only ever arrive on a tenant's own connected
+  // Stripe account (`event.account`), which is how tenantId is resolved.
   stripeProductId String?     @unique
   stripePriceId   String?     @unique
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   courseId String?
   course   Course? @relation(fields: [courseId], references: [id])
 
+  // Phase 10: both set only for a LISTING_UPGRADE product, same optional-
+  // field-per-type pattern courseId already established for COURSE.
+  // listingTier is the ListingTier this purchase grants (parsed from Stripe
+  // Product metadata.tier) — there's no other field to derive it from, since
+  // a directory can sell more than one upgrade tier (e.g. Featured vs. Premium).
+  listingId   String?
+  listing     Listing?     @relation(fields: [listingId], references: [id])
+  listingTier ListingTier?
+
   orders Order[]
+
+  @@index([tenantId])
 }
 
 enum OrderStatus {
@@ -877,6 +930,9 @@ model Order {
   createdAt               DateTime    @default(now())
   updatedAt               DateTime    @updatedAt
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   userId String?
   user   User?   @relation(fields: [userId], references: [id])
 
@@ -895,6 +951,12 @@ model Order {
   funnelId String?
   funnel   Funnel? @relation(fields: [funnelId], references: [id])
 
+  // Phase 10: set for a listing-upgrade purchase — same optional-FK-per-type
+  // pattern courseId/dealId/funnelId already established.
+  listingId String?
+  listing   Listing? @relation(fields: [listingId], references: [id])
+
+  @@index([tenantId])
   @@index([userId])
   @@index([status])
 }
@@ -907,6 +969,8 @@ enum SubscriptionStatus {
   INCOMPLETE
 }
 
+// A User's subscription to one of a TENANT's membership products — distinct
+// from PlatformSubscription (what the tenant pays the platform itself).
 model Subscription {
   id                   String             @id @default(cuid())
   stripeSubscriptionId String             @unique
@@ -918,10 +982,34 @@ model Subscription {
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   userId String
   user   User   @relation(fields: [userId], references: [id])
 
+  @@index([tenantId])
   @@index([userId])
+}
+
+// A per-(Tenant,User) Stripe Customer object. Required because Stripe Connect
+// customers live on the connected account, not the platform's — the same
+// human buying from two different tenants is two different Stripe Customer
+// objects, on two different Stripe accounts. Replaces the old single global
+// User.stripeCustomerId (Phase 3), which only worked when there was one
+// Stripe account for everyone.
+model TenantCustomer {
+  id               String   @id @default(cuid())
+  stripeCustomerId String   @unique
+  createdAt        DateTime @default(now())
+
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
 }
 
 // Idempotency log for inbound Stripe webhook events.
@@ -959,12 +1047,18 @@ model SocialAccount {
   connectedAt          DateTime       @default(now())
   disconnectedAt       DateTime?
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   connectedByUserId String?
   connectedByUser   User?   @relation(fields: [connectedByUserId], references: [id])
 
   posts SocialPost[]
 
+  // A real Facebook Page/IG account can only ever be connected to one
+  // tenant at a time — this constraint is what enforces that, incidentally.
   @@unique([platform, externalId])
+  @@index([tenantId])
 }
 
 enum CampaignStatus {
@@ -984,10 +1078,15 @@ model Campaign {
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
 
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   createdByUserId String?
   createdByUser   User?   @relation(fields: [createdByUserId], references: [id])
 
   posts SocialPost[]
+
+  @@index([tenantId])
 }
 
 enum SocialPostStatus {
@@ -1045,4 +1144,110 @@ model InsightSnapshot {
   socialPost   SocialPost @relation(fields: [socialPostId], references: [id])
 
   @@index([socialPostId, capturedAt])
+}
+
+// =============================================================================
+// Directory (Phase 10): a multi-tenant local-business directory builder,
+// replicating/improving on smartdirectory.ai. Each Tenant builds ONE local
+// business directory (a chamber-of-commerce/city-guide-style site) listing
+// OTHER businesses — a Listing is just data our tenant owns, not another
+// platform Tenant. Visitors browse/search it and can chat with an AI
+// concierge agent; a listing's real-world owner can claim it and pay to
+// upgrade its tier, settling on the tenant's own Stripe Connect account
+// exactly like a course or membership purchase (see Product/Order below).
+// =============================================================================
+
+// One directory per tenant (kept 1:1 for this phase's scope — a tenant
+// running two distinct directories, e.g. two different cities, is a real
+// future need but not one anything currently asks for; revisit if it comes
+// up rather than building the multi-directory UI speculatively now).
+model Directory {
+  id          String   @id @default(cuid())
+  name        String
+  description String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenantId String    @unique
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  categories DirectoryCategory[]
+  listings   Listing[]
+}
+
+model DirectoryCategory {
+  id    String @id @default(cuid())
+  name  String
+  slug  String
+  order Int    @default(0)
+
+  directoryId String
+  directory   Directory @relation(fields: [directoryId], references: [id], onDelete: Cascade)
+
+  listings Listing[]
+
+  @@unique([directoryId, slug])
+  @@index([directoryId])
+}
+
+enum ListingTier {
+  FREE
+  FEATURED
+  PREMIUM
+}
+
+// Soft state via status, not deletion — same convention as Enrollment/Order
+// elsewhere in this schema, so a listing's history (claim, past upgrades)
+// survives it being taken down.
+enum ListingStatus {
+  DRAFT
+  PUBLISHED
+  UNPUBLISHED
+}
+
+model Listing {
+  id          String        @id @default(cuid())
+  name        String
+  slug        String
+  description String?       @db.Text
+  address     String?
+  city        String?
+  state       String?
+  postalCode  String?
+  phone       String?
+  website     String?
+  email       String?
+  hours       Json? // free-form weekly hours — intentionally simple, same rationale as Quiz.questions
+  photos      Json? // array of pasted R2/external URLs — no upload UI yet, matching Academy's downloads/quiz convention (no R2 credentials to build a real upload flow against)
+  tier        ListingTier   @default(FREE)
+  status      ListingStatus @default(PUBLISHED)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  // Denormalized directly onto the row (not just reachable via directoryId)
+  // for the same reason Order/Product carry tenantId despite being reachable
+  // via a parent — simpler tenant-scoped queries and webhook dispatch,
+  // matching this schema's established convention throughout Phase 8/9.
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  directoryId String
+  directory   Directory @relation(fields: [directoryId], references: [id], onDelete: Cascade)
+
+  categoryId String?
+  category   DirectoryCategory? @relation(fields: [categoryId], references: [id])
+
+  // Claiming links a listing to the real business owner's platform User —
+  // same "link an existing record to a User by an explicit action" pattern
+  // signup.ts already uses for a funnel-sourced Contact.
+  claimedByUserId String?
+  claimedByUser   User?     @relation(fields: [claimedByUserId], references: [id])
+  claimedAt       DateTime?
+
+  products Product[]
+  orders   Order[]
+
+  @@unique([directoryId, slug])
+  @@index([tenantId])
+  @@index([directoryId, status])
 }

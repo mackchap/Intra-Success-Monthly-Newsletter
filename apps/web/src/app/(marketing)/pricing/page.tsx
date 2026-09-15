@@ -1,13 +1,19 @@
 import Link from "next/link";
 import { prisma } from "@platform/db";
 import { formatMoney } from "@/lib/format";
+import { getLegacyTenantId, getLegacyTenantSlug } from "@/lib/accounts/legacy-tenant";
 
 export const dynamic = "force-dynamic";
 
 export default async function PricingPage() {
+  const tenantId = await getLegacyTenantId();
+  const tenantSlug = await getLegacyTenantSlug();
   const [courses, membershipProducts] = await Promise.all([
-    prisma.course.findMany({ where: { published: true, priceType: { in: ["FREE", "PAID"] } }, orderBy: { priceCents: "asc" } }),
-    prisma.product.findMany({ where: { type: "MEMBERSHIP" } }),
+    prisma.course.findMany({
+      where: { tenantId, published: true, priceType: { in: ["FREE", "PAID"] } },
+      orderBy: { priceCents: "asc" },
+    }),
+    prisma.product.findMany({ where: { tenantId, type: "MEMBERSHIP" } }),
   ]);
 
   return (
@@ -45,7 +51,7 @@ export default async function PricingPage() {
           {courses.map((course) => (
             <Link
               key={course.id}
-              href={`/courses/${course.slug}`}
+              href={`/t/${tenantSlug}/courses/${course.slug}`}
               className="flex flex-col gap-2 rounded-lg border border-slate-200 p-5 hover:border-brand-500"
             >
               <h3 className="font-medium">{course.title}</h3>
